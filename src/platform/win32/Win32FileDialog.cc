@@ -7,9 +7,11 @@
 
 namespace lale {
 
-std::optional<std::string> ShowOpenFileDialog(const Window& owner,
-                                              std::string_view filter_name,
-                                              std::string_view file_extension) {
+namespace {
+
+std::optional<std::string> RunOpenFileDialog(const Window& owner,
+                                             std::string_view filter_name,
+                                             std::string_view file_extension) {
   IFileOpenDialog* dialog = nullptr;
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
                               CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
@@ -39,6 +41,14 @@ std::optional<std::string> ShowOpenFileDialog(const Window& owner,
   }
   dialog->Release();
   return chosen_path;
+}
+
+}
+
+void ShowOpenFileDialog(const Window& owner, std::string_view filter_name,
+                        std::string_view file_extension,
+                        FileDialogCallback on_finished) {
+  on_finished(RunOpenFileDialog(owner, filter_name, file_extension));
 }
 
 }

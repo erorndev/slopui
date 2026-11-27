@@ -29,6 +29,43 @@ target_include_directories(lale PRIVATE src)
 target_link_libraries(lale PRIVATE yogacore thorvg llama)
 
 if(WIN32)
+  set(LALE_DEFAULT_PLATFORM win32)
+else()
+  set(LALE_DEFAULT_PLATFORM sdl)
+endif()
+set(LALE_PLATFORM ${LALE_DEFAULT_PLATFORM} CACHE STRING "Platform layer: win32 or sdl")
+set_property(CACHE LALE_PLATFORM PROPERTY STRINGS win32 sdl)
+
+if(WIN32)
+  target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
+  if(MSVC)
+    target_link_options(lale PRIVATE /ENTRY:mainCRTStartup)
+  endif()
+endif()
+
+if(LALE_PLATFORM STREQUAL "sdl")
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+  set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+  set(SDL_UNINSTALL OFF CACHE BOOL "" FORCE)
+  foreach(unused_subsystem AUDIO CAMERA JOYSTICK HAPTIC HIDAPI SENSOR POWER)
+    set(SDL_${unused_subsystem} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  add_subdirectory(vendor/sdl EXCLUDE_FROM_ALL)
+  target_sources(lale PRIVATE
+      src/gfx/sdl/SdlPresenter.cc
+      src/platform/sdl/SdlFileDialog.cc
+      src/platform/sdl/SdlPlatform.cc
+      src/platform/sdl/SdlSystemAppearance.cc
+      src/platform/sdl/SdlWindow.cc)
+  target_link_libraries(lale PRIVATE SDL3::SDL3-static)
+  if(UNIX)
+    target_link_libraries(lale PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+elseif(LALE_PLATFORM STREQUAL "win32" AND WIN32)
   target_sources(lale PRIVATE
       src/gfx/d3d11/D3D11Presenter.cc
       src/platform/win32/Win32FileDialog.cc
@@ -36,12 +73,8 @@ if(WIN32)
       src/platform/win32/Win32SystemAppearance.cc
       src/platform/win32/Win32Window.cc)
   target_link_libraries(lale PRIVATE d3d11 dxgi dwmapi ole32 uuid shell32)
-  target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
-  if(MSVC)
-    target_link_options(lale PRIVATE /ENTRY:mainCRTStartup)
-  endif()
 else()
-  message(FATAL_ERROR "Lale has no platform layer for this system yet.")
+  message(FATAL_ERROR "Unknown LALE_PLATFORM: ${LALE_PLATFORM}")
 endif()
 
 add_custom_command(TARGET lale POST_BUILD

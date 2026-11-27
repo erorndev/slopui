@@ -413,8 +413,9 @@ void App::LoadFonts() {
       LoadFirstAvailableFont({"Inter-Regular.ttf", "segoeui.ttf"});
   std::string semibold_font_key = LoadFirstAvailableFont(
       {"Inter-SemiBold.ttf", "seguisb.ttf", "segoeui.ttf"});
-  std::string monospace_font_key =
-      LoadFirstAvailableFont({"CascadiaMono.ttf", "consola.ttf"});
+  std::string monospace_font_key = LoadFirstAvailableFont(
+      {"CascadiaMono.ttf", "consola.ttf", "DejaVuSansMono.ttf",
+       "LiberationMono-Regular.ttf"});
   if (monospace_font_key.empty()) monospace_font_key = regular_font_key;
   std::string italic_font_key =
       LoadFirstAvailableFont({"Inter-Italic.ttf", "segoeuii.ttf"});
@@ -2176,13 +2177,15 @@ void App::CloseSettings() {
 void App::ChooseModelFile() {
   pressed_node_id_.clear();
   hovered_node_id_.clear();
-  std::optional<std::string> chosen_path =
-      ShowOpenFileDialog(*window_, "GGUF models (*.gguf)", "gguf");
-  if (chosen_path) {
-    generation_settings_.model_path = std::move(*chosen_path);
-    RequestModelLoad();
-  }
-  Invalidate();
+  ShowOpenFileDialog(*window_, "GGUF models (*.gguf)", "gguf",
+                     [this](std::optional<std::string> chosen_path) {
+                       if (chosen_path) {
+                         generation_settings_.model_path =
+                             std::move(*chosen_path);
+                         RequestModelLoad();
+                       }
+                       Invalidate();
+                     });
 }
 
 void App::SetThemePreference(ThemePreference preference) {

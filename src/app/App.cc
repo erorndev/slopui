@@ -878,13 +878,20 @@ void App::BuildSidebar(ui::Node* parent) {
   YGNodeStyleSetFlexGrow(new_chat_label->yoga_node(), 1);
   BuildKeyHint(new_chat, "Ctrl N");
 
-  ui::Node* section_caption = sidebar->AddChild();
-  YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeBottom,
-                       theme::Spacing(1));
-  YGNodeStyleSetPadding(section_caption->yoga_node(), YGEdgeHorizontal,
-                        theme::Spacing(2.5f));
-  BuildLabel(section_caption, "Chats", caption_font_.get(),
-             palette_.text_tertiary);
+  const bool has_saved_chats =
+      std::any_of(conversations_.begin(), conversations_.end(),
+                  [](const Conversation& conversation) {
+                    return !conversation.messages.empty();
+                  });
+  if (has_saved_chats) {
+    ui::Node* section_caption = sidebar->AddChild();
+    YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeBottom,
+                         theme::Spacing(1));
+    YGNodeStyleSetPadding(section_caption->yoga_node(), YGEdgeHorizontal,
+                          theme::Spacing(2.5f));
+    BuildLabel(section_caption, "Chats", caption_font_.get(),
+               palette_.text_tertiary);
+  }
 
   ui::Node* conversation_list = sidebar->AddChild();
   YGNodeStyleSetFlexGrow(conversation_list->yoga_node(), 1);
@@ -892,6 +899,7 @@ void App::BuildSidebar(ui::Node* parent) {
   YGNodeStyleSetGap(conversation_list->yoga_node(), YGGutterRow,
                     theme::Spacing(0.5f));
   for (size_t index = 0; index < conversations_.size(); ++index) {
+    if (conversations_[index].messages.empty()) continue;
     BuildSidebarRow(conversation_list,
                     std::string(kConversationIdPrefix) + std::to_string(index),
                     conversations_[index].title, ui::IconKind::kNone,
@@ -1158,7 +1166,7 @@ void App::BuildMessageActions(ui::Node* parent, size_t message_index,
                     message.is_notice ? "Try again" : "Regenerate",
                     ButtonStyle::kQuiet);
   }
-  if (shows_copy && message.generated_token_count > 0) {
+  if (shows_copy && is_last_message && message.generated_token_count > 0) {
     ui::Node* statistics =
         BuildLabel(actions, FinishedStatisticsText(message),
                    caption_font_.get(), palette_.text_tertiary);
@@ -1467,12 +1475,6 @@ void App::BuildEmptyState(ui::Node* parent) {
         model_loading ? "Getting the model ready" : "Choose a model to begin",
         title_font_.get(), palette_.text_primary);
   }
-  AddVerticalSpace(empty_state, theme::Spacing(3));
-  BuildLabel(empty_state, "Lale runs llama.cpp models locally on this PC.",
-             body_font_.get(), palette_.text_secondary);
-  AddVerticalSpace(empty_state, theme::Spacing(1));
-  BuildLabel(empty_state, "Nothing you type leaves your computer.",
-             body_font_.get(), palette_.text_secondary);
   if (model_loaded) return;
   if (model_loading) {
     AddVerticalSpace(empty_state, theme::Spacing(6));
@@ -1536,31 +1538,24 @@ void App::BuildComposer(ui::Node* parent) {
   }
   field_box->style().cursor = CursorKind::kIBeam;
 
+  YGNodeStyleSetFlexDirection(field_box->yoga_node(), YGFlexDirectionRow);
+  YGNodeStyleSetAlignItems(field_box->yoga_node(), YGAlignFlexEnd);
+  YGNodeStyleSetGap(field_box->yoga_node(), YGGutterColumn, theme::Spacing(3));
   ui::Node* field_text =
       BuildEditableText(field_box, kComposerFieldId, composer_text_,
                         composer_selection_, "Message Lale");
+  YGNodeStyleSetFlexGrow(field_text->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(field_text->yoga_node(), 1);
   YGNodeStyleSetMaxHeight(field_text->yoga_node(),
                           theme::kComposerMaximumTextHeight);
   YGNodeStyleSetMinHeight(field_text->yoga_node(), 22);
-  YGNodeStyleSetMargin(field_text->yoga_node(), YGEdgeTop, theme::Spacing(1));
-
-  ui::Node* toolbar = field_box->AddChild();
-  MakeRow(toolbar->yoga_node());
-  YGNodeStyleSetJustifyContent(toolbar->yoga_node(), YGJustifySpaceBetween);
-  ui::Node* hints = toolbar->AddChild();
-  MakeRow(hints->yoga_node());
-  YGNodeStyleSetGap(hints->yoga_node(), YGGutterColumn, theme::Spacing(1.5f));
-  BuildKeyHint(hints, "Enter");
-  BuildLabel(hints, "send", caption_font_.get(), palette_.text_tertiary);
-  ui::Node* hint_spacer = hints->AddChild();
-  YGNodeStyleSetWidth(hint_spacer->yoga_node(), theme::Spacing(1.5f));
-  BuildKeyHint(hints, "Shift Enter");
-  BuildLabel(hints, "new line", caption_font_.get(), palette_.text_tertiary);
+  YGNodeStyleSetMargin(field_text->yoga_node(), YGEdgeBottom,
+                       theme::Spacing(1.5f));
 
   const bool can_send = generating_ || !TrimWhitespace(composer_text_).empty();
   const std::string send_id =
       generating_ ? "stop" : (can_send ? "send" : std::string());
-  ui::Node* send_button = toolbar->AddChild(send_id);
+  ui::Node* send_button = field_box->AddChild(send_id);
   YGNodeStyleSetWidth(send_button->yoga_node(), 32);
   YGNodeStyleSetHeight(send_button->yoga_node(), 32);
   YGNodeStyleSetFlexShrink(send_button->yoga_node(), 0);
@@ -1587,11 +1582,11 @@ ui::Node* App::BuildSettingsSection(ui::Node* parent, std::string caption) {
              palette_.text_primary);
 
   ui::Node* card = parent->AddChild();
-  card->style().corner_radius = theme::kBaseCornerRadius;
-  card->style().background = palette_.background_primary;
-  card->style().border = palette_.border;
+  card->style().corner_radius = theme::kRaisedCornerRadius;
+  card->style().background = palette_.glass_fill;
+  card->style().border = palette_.glass_border;
   card->style().border_width = 1;
-  card->style().shadows = palette_.shadow_small;
+  card->style().shadows = palette_.shadow_medium;
   return card;
 }
 
@@ -1736,7 +1731,7 @@ void App::BuildModelSettings(ui::Node* column) {
       palette_.text_secondary);
   file_detail->style().elides_text = true;
   if (model_chosen) {
-    BuildTextButton(file_row, "model-clear", "Remove", ButtonStyle::kLink);
+    BuildTextButton(file_row, "model-clear", "Remove", ButtonStyle::kQuiet);
   }
   BuildTextButton(
       file_row, "model-choose", model_chosen ? "Change" : "Choose file",
@@ -1919,7 +1914,20 @@ void App::BuildShortcutSettings(ui::Node* column) {
   BuildSettingsRowSeparator(typing_card);
   BuildShortcutRow(typing_card, "New line", "Shift Enter");
   BuildSettingsRowSeparator(typing_card);
-  BuildShortcutRow(typing_card, "Paste", "Ctrl V");
+  BuildShortcutRow(typing_card, "Undo", "Ctrl Z");
+  BuildSettingsRowSeparator(typing_card);
+  BuildShortcutRow(typing_card, "Redo", "Ctrl Y");
+  ui::Node* editing_card = BuildSettingsSection(column, "Text");
+  BuildShortcutRow(editing_card, "Copy selected text", "Ctrl C");
+  BuildSettingsRowSeparator(editing_card);
+  BuildShortcutRow(editing_card, "Cut", "Ctrl X");
+  BuildSettingsRowSeparator(editing_card);
+  BuildShortcutRow(editing_card, "Paste", "Ctrl V");
+  BuildSettingsRowSeparator(editing_card);
+  BuildShortcutRow(editing_card, "Select all", "Ctrl A");
+  BuildSettingsRowSeparator(editing_card);
+  BuildShortcutRow(editing_card, "Jump by word",
+                   "Ctrl \xE2\x86\x90 \xE2\x86\x92");
 }
 
 void App::BuildShortcutRow(ui::Node* card, std::string_view action,

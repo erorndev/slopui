@@ -8,8 +8,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_subdirectory(vendor/yoga/yoga EXCLUDE_FROM_ALL)
 add_subdirectory(vendor/thorvg EXCLUDE_FROM_ALL)
 
-set(LALE_LLAMA_PREFIX "C:/llama.cpp" CACHE PATH "Install prefix of the system llama.cpp")
-list(APPEND CMAKE_PREFIX_PATH ${LALE_LLAMA_PREFIX})
 find_package(llama CONFIG REQUIRED)
 
 add_executable(lale WIN32
@@ -35,8 +33,3 @@ add_custom_command(TARGET lale POST_BUILD
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-Regular.ttf
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-SemiBold.ttf
         $<TARGET_FILE_DIR:lale>/fonts)
-
-file(GLOB LALE_LLAMA_RUNTIME_LIBRARIES "${LALE_LLAMA_PREFIX}/bin/*.dll")
-add_custom_command(TARGET lale POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${LALE_LLAMA_RUNTIME_LIBRARIES} $<TARGET_FILE_DIR:lale>)

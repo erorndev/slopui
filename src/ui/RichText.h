@@ -33,5 +33,10 @@ struct RichTextLine {
 
 std::vector<RichTextLine> LayoutRichText(const std::vector<TextSpan>& spans,
                                          float maximum_width);
+std::vector<size_t> SpanStartOffsets(const std::vector<TextSpan>& spans);
+std::string PlainTextOfSpans(const std::vector<TextSpan>& spans);
+size_t RichTextOffsetAtPoint(const std::vector<TextSpan>& spans,
+                             const std::vector<RichTextLine>& lines, float x,
+                             float y);
 
 }

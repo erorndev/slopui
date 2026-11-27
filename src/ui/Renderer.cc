@@ -143,6 +143,9 @@ void DrawRichText(const NodeStyle& style, const Rect& bounds,
                   tvg::Scene* target_scene) {
   constexpr float kBackgroundPadding = 3.0f;
   constexpr float kBackgroundCornerRadius = 4.0f;
+  const bool has_selection = style.selection_end > style.selection_begin &&
+                             style.selection_end != std::string::npos;
+  const std::vector<size_t> span_offsets = SpanStartOffsets(style.spans);
   float line_top = bounds.y;
   for (const RichTextLine& line : LayoutRichText(style.spans, bounds.width)) {
     for (const RichTextFragment& fragment : line.fragments) {
@@ -157,6 +160,31 @@ void DrawRichText(const NodeStyle& style, const Rect& bounds,
         background->fill(span.background.red, span.background.green,
                          span.background.blue, span.background.alpha);
         target_scene->add(background);
+      }
+      if (has_selection) {
+        const size_t span_start = span_offsets[fragment.span_index];
+        const size_t begin =
+            std::clamp(style.selection_begin, span_start + fragment.begin_byte,
+                       span_start + fragment.end_byte) -
+            span_start;
+        const size_t end =
+            std::clamp(style.selection_end, span_start + fragment.begin_byte,
+                       span_start + fragment.end_byte) -
+            span_start;
+        if (end > begin) {
+          const std::string_view span_text = span.text;
+          const float left = span.font->Measure(span_text.substr(
+              fragment.begin_byte, begin - fragment.begin_byte));
+          const float right = span.font->Measure(
+              span_text.substr(fragment.begin_byte, end - fragment.begin_byte));
+          tvg::Shape* highlight = tvg::Shape::gen();
+          highlight->appendRect(bounds.x + fragment.x + left, line_top,
+                                right - left, line.height);
+          highlight->fill(
+              style.selection_color.red, style.selection_color.green,
+              style.selection_color.blue, style.selection_color.alpha);
+          target_scene->add(highlight);
+        }
       }
       std::string fragment_text = span.text.substr(
           fragment.begin_byte, fragment.end_byte - fragment.begin_byte);

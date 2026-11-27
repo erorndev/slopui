@@ -26,6 +26,19 @@ enum class ButtonStyle { kPrimary, kSecondary, kLink, kQuiet };
 
 enum class SettingsSection { kModel, kSampling, kAppearance, kShortcuts };
 
+struct MessageTextPoint {
+  size_t block_index = 0;
+  size_t offset = 0;
+
+  auto operator<=>(const MessageTextPoint&) const = default;
+};
+
+struct SelectableText {
+  std::string node_id;
+  std::string text;
+  std::string_view separator;
+};
+
 struct TextFieldEditor {
   std::string* text = nullptr;
   ui::TextSelection* selection = nullptr;
@@ -164,6 +177,13 @@ class App : public WindowHandler {
   void BuildMessageActions(ui::Node* parent, size_t message_index,
                            bool is_last_message);
   ui::Node* BuildCopyButton(ui::Node* parent, std::string id);
+  void MakeSelectable(ui::Node* node, std::string plain_text,
+                      std::string_view separator);
+  bool HasMessageSelection() const;
+  void ClearMessageSelection();
+  std::string SelectedMessageText() const;
+  std::optional<MessageTextPoint> MessageTextPointAt(float logical_x,
+                                                     float logical_y) const;
   std::string StreamingStatusText(const ChatMessage& message) const;
   std::string FinishedStatisticsText(const ChatMessage& message) const;
   static float TokensPerSecond(const ChatMessage& message);
@@ -230,6 +250,10 @@ class App : public WindowHandler {
   bool delete_confirmation_pending_ = false;
   std::string copied_button_id_;
   std::vector<std::string> copyable_code_blocks_;
+  std::vector<SelectableText> selectable_texts_;
+  MessageTextPoint message_selection_anchor_;
+  MessageTextPoint message_selection_focus_;
+  bool dragging_message_selection_ = false;
   bool dragging_text_selection_ = false;
   float preferred_caret_x_ = -1;
   bool window_active_ = true;

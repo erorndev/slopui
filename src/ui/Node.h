@@ -97,6 +97,7 @@ class Node {
 
   YGNodeRef yoga_node() const { return yoga_node_; }
   const std::string& id() const { return id_; }
+  void set_id(std::string id) { id_ = std::move(id); }
   NodeStyle& style() { return style_; }
   const NodeStyle& style() const { return style_; }
   const std::vector<std::unique_ptr<Node>>& children() const {

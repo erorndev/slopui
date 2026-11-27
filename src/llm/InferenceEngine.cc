@@ -258,6 +258,7 @@ void InferenceEngine::RunWorker() {
 }
 
 void InferenceEngine::UnloadOnWorker() {
+  cached_tokens_.clear();
   if (context_) llama_free(context_);
   if (model_) llama_model_free(model_);
   context_ = nullptr;
@@ -372,7 +373,23 @@ void InferenceEngine::GenerateOnWorker(
     return;
   }
 
-  llama_memory_clear(llama_get_memory(context_), true);
+  llama_memory_t memory = llama_get_memory(context_);
+  size_t reused_count = 0;
+  while (reused_count < cached_tokens_.size() &&
+         reused_count < prompt_tokens.size() &&
+         cached_tokens_[reused_count] == prompt_tokens[reused_count]) {
+    ++reused_count;
+  }
+  if (reused_count > 0 && reused_count == prompt_tokens.size()) {
+    --reused_count;
+  }
+  if (!llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(reused_count),
+                           -1)) {
+    llama_memory_clear(memory, true);
+    reused_count = 0;
+  }
+  cached_tokens_.assign(prompt_tokens.begin(),
+                        prompt_tokens.begin() + reused_count);
   llama_sampler* sampler = MakeSampler(vocab, sampling);
   llama_batch_ext* batch = llama_batch_ext_init(context_);
   const int batch_capacity = static_cast<int>(llama_n_batch(context_));
@@ -392,11 +409,16 @@ void InferenceEngine::GenerateOnWorker(
 
   PublishEvent({EngineEventKind::kPromptStarted, {}, 0, token_count});
   bool failed = false;
-  llama_pos next_position = 0;
-  for (int offset = 0; offset < token_count && !failed;
-       offset += batch_capacity) {
+  llama_pos next_position = static_cast<llama_pos>(reused_count);
+  for (int offset = static_cast<int>(reused_count);
+       offset < token_count && !failed; offset += batch_capacity) {
     const int count = std::min(batch_capacity, token_count - offset);
     failed = process(prompt_tokens.data() + offset, count, next_position) != 0;
+    if (!failed) {
+      cached_tokens_.insert(cached_tokens_.end(),
+                            prompt_tokens.begin() + offset,
+                            prompt_tokens.begin() + offset + count);
+    }
     next_position += count;
   }
 
@@ -434,9 +456,14 @@ void InferenceEngine::GenerateOnWorker(
       publish_text(SafePublishEnd(reply_text, published_length));
     }
     failed = process(&token, 1, next_position) != 0;
+    if (!failed) cached_tokens_.push_back(token);
     ++next_position;
   }
   publish_text(reply_text.size());
+  if (failed) {
+    llama_memory_clear(memory, true);
+    cached_tokens_.clear();
+  }
 
   llama_batch_ext_free(batch);
   llama_sampler_free(sampler);

@@ -99,6 +99,7 @@ class InferenceEngine {
   std::vector<EngineEvent> pending_events_;
   std::atomic<bool> cancel_requested_ = false;
   int last_reported_load_percent_ = -1;
+  std::vector<int32_t> cached_tokens_;
 
   llama_model* model_ = nullptr;
   llama_context* context_ = nullptr;

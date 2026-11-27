@@ -179,4 +179,72 @@ std::vector<RichTextLine> LayoutRichText(const std::vector<TextSpan>& spans,
   return lines;
 }
 
+std::vector<size_t> SpanStartOffsets(const std::vector<TextSpan>& spans) {
+  std::vector<size_t> offsets;
+  offsets.reserve(spans.size());
+  size_t total = 0;
+  for (const TextSpan& span : spans) {
+    offsets.push_back(total);
+    total += span.text.size();
+  }
+  return offsets;
+}
+
+std::string PlainTextOfSpans(const std::vector<TextSpan>& spans) {
+  std::string text;
+  for (const TextSpan& span : spans) text += span.text;
+  return text;
+}
+
+size_t RichTextOffsetAtPoint(const std::vector<TextSpan>& spans,
+                             const std::vector<RichTextLine>& lines, float x,
+                             float y) {
+  const std::vector<size_t> span_offsets = SpanStartOffsets(spans);
+  auto global_offset = [&](const RichTextFragment& fragment, size_t byte) {
+    return span_offsets[fragment.span_index] + byte;
+  };
+  if (y < 0) return 0;
+  float line_top = 0;
+  for (size_t line_index = 0; line_index < lines.size(); ++line_index) {
+    const RichTextLine& line = lines[line_index];
+    const bool is_last_line = line_index + 1 == lines.size();
+    if (y >= line_top + line.height && !is_last_line) {
+      line_top += line.height;
+      continue;
+    }
+    if (y >= line_top + line.height || line.fragments.empty()) {
+      if (line.fragments.empty()) {
+        if (line_index + 1 < lines.size() &&
+            !lines[line_index + 1].fragments.empty()) {
+          const RichTextFragment& next =
+              lines[line_index + 1].fragments.front();
+          return global_offset(next, next.begin_byte);
+        }
+        return PlainTextOfSpans(spans).size();
+      }
+      const RichTextFragment& last = line.fragments.back();
+      return global_offset(last, last.end_byte);
+    }
+    for (const RichTextFragment& fragment : line.fragments) {
+      if (x < fragment.x) return global_offset(fragment, fragment.begin_byte);
+      if (x > fragment.x + fragment.width) continue;
+      const TextSpan& span = spans[fragment.span_index];
+      float cursor_x = fragment.x;
+      size_t byte = fragment.begin_byte;
+      while (byte < fragment.end_byte) {
+        size_t glyph_length = 0;
+        const float advance =
+            span.font->GlyphAdvance(span.text, byte, &glyph_length);
+        if (x < cursor_x + advance / 2) break;
+        cursor_x += advance;
+        byte += glyph_length;
+      }
+      return global_offset(fragment, byte);
+    }
+    const RichTextFragment& last = line.fragments.back();
+    return global_offset(last, last.end_byte);
+  }
+  return PlainTextOfSpans(spans).size();
+}
+
 }

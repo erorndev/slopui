@@ -22,6 +22,7 @@ constexpr std::string_view kRenameFieldId = "rename-field";
 constexpr std::string_view kRecentModelIdPrefix = "recent-model:";
 constexpr std::string_view kCopyMessageIdPrefix = "copy-message:";
 constexpr std::string_view kCopyCodeIdPrefix = "copy-code:";
+constexpr std::string_view kSelectableIdPrefix = "select:";
 constexpr std::string_view kMessageViewportId = "message-viewport";
 constexpr std::string_view kSettingsViewportId = "settings-viewport";
 constexpr std::string_view kTextNodeSuffix = "#text";
@@ -487,6 +488,7 @@ ui::Color App::InteractiveFill(std::string_view node_id, ui::Color resting,
 
 std::unique_ptr<ui::Node> App::BuildInterface() {
   copyable_code_blocks_.clear();
+  selectable_texts_.clear();
   auto root = std::make_unique<ui::Node>();
   root->style().background = palette_.background_primary;
   BuildTitleBar(root.get());
@@ -955,8 +957,28 @@ void App::BuildTopBar(ui::Node* parent) {
 }
 
 void App::BuildMessageList(ui::Node* parent) {
-  ui::Node* viewport = parent->AddChild(std::string(kMessageViewportId));
+  ui::Node* message_region = parent->AddChild();
+  YGNodeStyleSetFlexGrow(message_region->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(message_region->yoga_node(), 1);
+  YGNodeStyleSetMinHeight(message_region->yoga_node(), 0);
+  ui::Node* viewport =
+      message_region->AddChild(std::string(kMessageViewportId));
   MakeScrollViewport(viewport, message_scroll_offset_);
+  if (!message_scroll_pinned_to_bottom_) {
+    ui::Node* jump_holder = message_region->AddChild();
+    YGNodeStyleSetPositionType(jump_holder->yoga_node(),
+                               YGPositionTypeAbsolute);
+    YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeLeft, 0);
+    YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeRight, 0);
+    YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeBottom,
+                           theme::Spacing(3));
+    YGNodeStyleSetAlignItems(jump_holder->yoga_node(), YGAlignCenter);
+    ui::Node* jump_button =
+        BuildTextButton(jump_holder, "jump-to-latest", "Jump to latest",
+                        ButtonStyle::kSecondary);
+    jump_button->style().corner_radius = theme::kControlHeight / 2;
+    jump_button->style().shadows = palette_.shadow_medium;
+  }
 
   const Conversation& conversation = conversations_[active_conversation_index_];
   ui::Node* content = viewport->AddChild();
@@ -995,8 +1017,9 @@ void App::BuildMessageList(ui::Node* parent) {
       bubble->style().background = palette_.component_background;
       bubble->style().border = palette_.border;
       bubble->style().border_width = 1;
-      BuildLabel(bubble, message.text, body_font_.get(), palette_.text_primary,
-                 true);
+      MakeSelectable(BuildLabel(bubble, message.text, body_font_.get(),
+                                palette_.text_primary, true),
+                     message.text, "\n\n");
     } else if (message.is_notice) {
       BuildNotice(group, message.text);
     } else if (message.is_streaming &&
@@ -1114,7 +1137,92 @@ ui::Node* App::BuildRichText(ui::Node* parent,
   }
   YGNodeStyleSetFlexShrink(text->yoga_node(), 1);
   text->EnableTextMeasurement();
+  MakeSelectable(text, ui::PlainTextOfSpans(text->style().spans), "\n\n");
   return text;
+}
+
+void App::MakeSelectable(ui::Node* node, std::string plain_text,
+                         std::string_view separator) {
+  const size_t block_index = selectable_texts_.size();
+  std::string node_id =
+      std::string(kSelectableIdPrefix) + std::to_string(block_index);
+  node->set_id(node_id);
+  node->style().cursor = CursorKind::kIBeam;
+  if (HasMessageSelection()) {
+    const auto [first, last] =
+        std::minmax(message_selection_anchor_, message_selection_focus_);
+    if (block_index >= first.block_index && block_index <= last.block_index) {
+      node->style().selection_begin =
+          block_index == first.block_index ? first.offset : 0;
+      node->style().selection_end =
+          block_index == last.block_index ? last.offset : plain_text.size();
+      node->style().selection_color = palette_.text_selection;
+    }
+  }
+  selectable_texts_.push_back(
+      {std::move(node_id), std::move(plain_text), separator});
+}
+
+bool App::HasMessageSelection() const {
+  return message_selection_anchor_ != message_selection_focus_;
+}
+
+void App::ClearMessageSelection() {
+  message_selection_anchor_ = {};
+  message_selection_focus_ = {};
+  dragging_message_selection_ = false;
+}
+
+std::string App::SelectedMessageText() const {
+  if (!HasMessageSelection()) return {};
+  const auto [first, last] =
+      std::minmax(message_selection_anchor_, message_selection_focus_);
+  std::string selected;
+  for (size_t index = first.block_index;
+       index <= last.block_index && index < selectable_texts_.size(); ++index) {
+    const SelectableText& block = selectable_texts_[index];
+    const size_t begin = index == first.block_index
+                             ? std::min(first.offset, block.text.size())
+                             : 0;
+    const size_t end = index == last.block_index
+                           ? std::min(last.offset, block.text.size())
+                           : block.text.size();
+    if (index > first.block_index) selected += block.separator;
+    if (end > begin) selected.append(block.text, begin, end - begin);
+  }
+  return selected;
+}
+
+std::optional<MessageTextPoint> App::MessageTextPointAt(float logical_x,
+                                                        float logical_y) const {
+  if (!interface_root_ || selectable_texts_.empty()) return std::nullopt;
+  for (size_t index = 0; index < selectable_texts_.size(); ++index) {
+    const ui::Node* node =
+        interface_root_->FindById(selectable_texts_[index].node_id);
+    if (!node) continue;
+    const ui::Rect& bounds = node->bounds();
+    if (logical_y < bounds.y) return MessageTextPoint{index, 0};
+    if (logical_y >= bounds.y + bounds.height) continue;
+    const ui::NodeStyle& style = node->style();
+    const float local_x = logical_x - bounds.x;
+    const float local_y = logical_y - bounds.y;
+    size_t offset = 0;
+    if (!style.spans.empty()) {
+      offset = ui::RichTextOffsetAtPoint(
+          style.spans, ui::LayoutRichText(style.spans, bounds.width), local_x,
+          local_y);
+    } else if (style.font) {
+      offset = ui::ByteAtPoint(
+          *style.font, style.text,
+          ui::WrapForEditing(*style.font, style.text,
+                             ui::TextWrapWidth(style, bounds.width)),
+          local_x, local_y);
+    }
+    return MessageTextPoint{index, offset};
+  }
+  const size_t last_index = selectable_texts_.size() - 1;
+  return MessageTextPoint{last_index,
+                          selectable_texts_[last_index].text.size()};
 }
 
 void App::BuildMarkdown(ui::Node* parent, std::string_view markdown) {
@@ -1172,8 +1280,10 @@ void App::BuildMarkdownBlock(ui::Node* parent, const ui::MarkdownBlock& block) {
       BuildCopyButton(header, std::string(kCopyCodeIdPrefix) +
                                   std::to_string(copyable_code_blocks_.size()));
       copyable_code_blocks_.push_back(block.code);
-      BuildLabel(box, block.code.empty() ? " " : block.code,
-                 monospace_body_font_.get(), palette_.text_primary, true);
+      const std::string shown_code = block.code.empty() ? " " : block.code;
+      MakeSelectable(BuildLabel(box, shown_code, monospace_body_font_.get(),
+                                palette_.text_primary, true),
+                     shown_code, "\n\n");
       return;
     }
     case MarkdownBlockKind::kListItem: {
@@ -1192,6 +1302,7 @@ void App::BuildMarkdownBlock(ui::Node* parent, const ui::MarkdownBlock& block) {
       ui::Node* text =
           BuildRichText(row, block.inlines, body_font_.get(),
                         body_strong_font_.get(), palette_.text_primary);
+      selectable_texts_.back().separator = "\n";
       YGNodeStyleSetFlexGrow(text->yoga_node(), 1);
       YGNodeStyleSetFlexBasis(text->yoga_node(), 0);
       return;
@@ -1248,6 +1359,7 @@ void App::BuildMarkdownTable(ui::Node* parent, const ui::MarkdownBlock& block) {
       BuildRichText(cell, column < cells.size() ? cells[column] : empty_cell,
                     is_header ? body_strong_font_.get() : body_font_.get(),
                     body_strong_font_.get(), palette_.text_primary);
+      selectable_texts_.back().separator = column == 0 ? "\n" : "\t";
     }
   }
 }
@@ -1840,6 +1952,8 @@ void App::HandleClick(const std::string& node_id) {
     } else {
       delete_confirmation_pending_ = true;
     }
+  } else if (node_id == "jump-to-latest") {
+    message_scroll_pinned_to_bottom_ = true;
   } else if (node_id == "regenerate") {
     RegenerateLastReply();
   } else if (node_id == "edit-message") {
@@ -2140,6 +2254,7 @@ void App::CopyToClipboard(std::string_view text, const std::string& button_id) {
 
 void App::StartNewConversation() {
   FinishRenamingConversation(true);
+  ClearMessageSelection();
   const Conversation& active = conversations_[active_conversation_index_];
   if (!active.messages.empty()) {
     conversations_.insert(conversations_.begin(),
@@ -2171,6 +2286,15 @@ void App::OnSystemAppearanceChanged() { ApplySystemAppearance(); }
 void App::OnPaint() { RenderFrame(); }
 
 void App::OnMouseMove(float x, float y) {
+  if (dragging_message_selection_) {
+    std::optional<MessageTextPoint> point = MessageTextPointAt(
+        x / device_pixels_per_point_, y / device_pixels_per_point_);
+    if (point && *point != message_selection_focus_) {
+      message_selection_focus_ = *point;
+      Invalidate();
+    }
+    return;
+  }
   if (dragging_text_selection_) {
     PlaceCaretAtPoint(x / device_pixels_per_point_,
                       y / device_pixels_per_point_, true);
@@ -2378,6 +2502,18 @@ void App::OnMouseDown(float x, float y, bool shift_down) {
   if (renaming_conversation_ && !keeps_rename_open) {
     FinishRenamingConversation(true);
   }
+  const bool hits_message_text = StartsWith(hit_id, kSelectableIdPrefix);
+  if (hits_message_text) {
+    std::optional<MessageTextPoint> point = MessageTextPointAt(
+        x / device_pixels_per_point_, y / device_pixels_per_point_);
+    if (point) {
+      if (!shift_down) message_selection_anchor_ = *point;
+      message_selection_focus_ = *point;
+      dragging_message_selection_ = true;
+    }
+  } else {
+    ClearMessageSelection();
+  }
   if (IsTextField(hit_id)) {
     const bool extend = shift_down && focused_field_id_ == hit_id;
     focused_field_id_ = hit_id;
@@ -2387,13 +2523,15 @@ void App::OnMouseDown(float x, float y, bool shift_down) {
   } else if (hit_id != "send") {
     focused_field_id_.clear();
   }
-  pressed_node_id_ = IsTextField(hit_id) ? std::string() : hit_id;
+  pressed_node_id_ =
+      IsTextField(hit_id) || hits_message_text ? std::string() : hit_id;
   hovered_node_id_ = hit_id;
   ResetCaretBlink();
 }
 
 void App::OnMouseUp(float x, float y) {
   dragging_text_selection_ = false;
+  dragging_message_selection_ = false;
   const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string released_id = hit ? hit->id() : std::string();
   std::string pressed_id = std::move(pressed_node_id_);
@@ -2445,8 +2583,23 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     ResetCaretBlink();
     return;
   }
+  if (control_down && !FocusedEditor()) {
+    if (virtual_key == 'C' && HasMessageSelection()) {
+      window_.SetClipboardText(SelectedMessageText());
+      return;
+    }
+    if (virtual_key == 'A' && !settings_page_open_ &&
+        !selectable_texts_.empty()) {
+      message_selection_anchor_ = {};
+      message_selection_focus_ = {selectable_texts_.size() - 1,
+                                  selectable_texts_.back().text.size()};
+      Invalidate();
+      return;
+    }
+  }
   if (virtual_key == VK_ESCAPE) {
     delete_confirmation_pending_ = false;
+    ClearMessageSelection();
     if (renaming_conversation_) {
       FinishRenamingConversation(false);
     } else if (settings_page_open_ && focused_field_id_.empty()) {

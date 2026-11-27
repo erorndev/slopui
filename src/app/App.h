@@ -47,6 +47,7 @@ class App : public WindowHandler {
   int Run();
 
   void OnResize(int client_width, int client_height) override;
+  void OnDpiChanged(UINT dots_per_inch) override;
   void OnPaint() override;
   void OnMouseMove(float x, float y) override;
   void OnMouseLeave() override;
@@ -60,6 +61,9 @@ class App : public WindowHandler {
  private:
   void LoadFonts();
   void RenderFrame();
+  float LogicalClientWidth() const;
+  float LogicalClientHeight() const;
+  const ui::Node* HitTestDevicePoint(float device_x, float device_y) const;
   void Invalidate();
   void ResetCaretBlink();
 
@@ -109,6 +113,7 @@ class App : public WindowHandler {
   bool message_scroll_pinned_to_bottom_ = true;
   float settings_scroll_offset_ = 0;
   bool needs_render_ = true;
+  float device_pixels_per_point_ = 1.0f;
 };
 
 }

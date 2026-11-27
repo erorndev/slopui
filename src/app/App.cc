@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include "app/Theme.h"
 
@@ -21,6 +22,20 @@ constexpr std::string_view kNewConversationTitle = "New chat";
 constexpr std::string_view kNoModelReply =
     "No model is loaded yet. Open Settings to choose a GGUF model. Replies "
     "will appear here once the llama.cpp backend is connected.";
+
+constexpr int kInitialLogicalWidth = 1280;
+constexpr int kInitialLogicalHeight = 800;
+
+UINT DotsPerInchOverrideFromEnvironment() {
+  char override_text[16] = {};
+  DWORD length =
+      GetEnvironmentVariableA("LALE_DPI", override_text, sizeof(override_text));
+  if (length == 0 || length >= sizeof(override_text)) return 0;
+  int parsed_dots_per_inch = std::atoi(override_text);
+  return parsed_dots_per_inch >= 48 && parsed_dots_per_inch <= 480
+             ? static_cast<UINT>(parsed_dots_per_inch)
+             : 0;
+}
 
 void SetPadding(YGNodeRef node, float horizontal, float vertical) {
   YGNodeStyleSetPadding(node, YGEdgeHorizontal, horizontal);
@@ -119,10 +134,18 @@ App::~App() = default;
 
 bool App::Initialize(int show_command) {
   LoadFonts();
-  if (!window_.Create(L"Lale", 1280, 800, this)) return false;
+  if (!window_.Create(L"Lale", kInitialLogicalWidth, kInitialLogicalHeight,
+                      this)) {
+    return false;
+  }
+  OnDpiChanged(window_.dots_per_inch());
   if (!presenter_.Initialize(window_.hwnd(), window_.client_width(),
                              window_.client_height())) {
     return false;
+  }
+  if (UINT override_dots_per_inch = DotsPerInchOverrideFromEnvironment()) {
+    window_.OverrideDotsPerInch(override_dots_per_inch, kInitialLogicalWidth,
+                                kInitialLogicalHeight);
   }
   RenderFrame();
   window_.Show(show_command);
@@ -173,13 +196,27 @@ void App::RenderFrame() {
   interface_root_ = BuildInterface();
   LayoutInterface(interface_root_.get());
   renderer_.Resize(window_.client_width(), window_.client_height());
-  renderer_.Render(*interface_root_, caret_visible_);
+  renderer_.Render(*interface_root_, caret_visible_, device_pixels_per_point_);
   presenter_.Present(renderer_.pixels(), renderer_.width(), renderer_.height());
 }
 
+float App::LogicalClientWidth() const {
+  return static_cast<float>(window_.client_width()) / device_pixels_per_point_;
+}
+
+float App::LogicalClientHeight() const {
+  return static_cast<float>(window_.client_height()) / device_pixels_per_point_;
+}
+
+const ui::Node* App::HitTestDevicePoint(float device_x, float device_y) const {
+  if (!interface_root_) return nullptr;
+  return interface_root_->HitTest(device_x / device_pixels_per_point_,
+                                  device_y / device_pixels_per_point_);
+}
+
 void App::LayoutInterface(ui::Node* root) {
-  const float client_width = static_cast<float>(window_.client_width());
-  const float client_height = static_cast<float>(window_.client_height());
+  const float client_width = LogicalClientWidth();
+  const float client_height = LogicalClientHeight();
   YGNodeStyleSetWidth(root->yoga_node(), client_width);
   YGNodeStyleSetHeight(root->yoga_node(), client_height);
   YGNodeCalculateLayout(root->yoga_node(), client_width, client_height,
@@ -195,10 +232,10 @@ std::unique_ptr<ui::Node> App::BuildInterface() {
   auto root = std::make_unique<ui::Node>();
   MakeRow(root->yoga_node());
   root->style().background = theme::kAppBackground;
-  const float client_width = static_cast<float>(window_.client_width());
   const bool sidebar_fits_beside_settings =
-      client_width >= theme::kSidebarWidth + theme::kSettingsPanelWidth +
-                          theme::kMinimumChatWidth;
+      LogicalClientWidth() >= theme::kSidebarWidth +
+                                  theme::kSettingsPanelWidth +
+                                  theme::kMinimumChatWidth;
   if (!settings_panel_open_ || sidebar_fits_beside_settings) {
     BuildSidebar(root.get());
   }
@@ -675,11 +712,17 @@ void App::OnResize(int client_width, int client_height) {
   RenderFrame();
 }
 
+void App::OnDpiChanged(UINT dots_per_inch) {
+  device_pixels_per_point_ = static_cast<float>(dots_per_inch) /
+                             static_cast<float>(USER_DEFAULT_SCREEN_DPI);
+  ui::SetLayoutPointScale(device_pixels_per_point_);
+  Invalidate();
+}
+
 void App::OnPaint() { RenderFrame(); }
 
 void App::OnMouseMove(float x, float y) {
-  const ui::Node* hit =
-      interface_root_ ? interface_root_->HitTest(x, y) : nullptr;
+  const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string hit_id = hit ? hit->id() : std::string();
   if (hit_id != hovered_node_id_) {
     hovered_node_id_ = std::move(hit_id);
@@ -695,8 +738,7 @@ void App::OnMouseLeave() {
 }
 
 void App::OnMouseDown(float x, float y) {
-  const ui::Node* hit =
-      interface_root_ ? interface_root_->HitTest(x, y) : nullptr;
+  const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string hit_id = hit ? hit->id() : std::string();
   if (IsTextField(hit_id)) {
     focused_field_id_ = hit_id;
@@ -709,15 +751,19 @@ void App::OnMouseDown(float x, float y) {
 
 void App::OnMouseWheel(float x, float y, float wheel_steps) {
   if (!interface_root_) return;
+  const float logical_x = x / device_pixels_per_point_;
+  const float logical_y = y / device_pixels_per_point_;
   float scroll_delta = wheel_steps * theme::kWheelScrollDistance;
   ui::Node* settings_viewport = interface_root_->FindById(kSettingsViewportId);
-  if (settings_viewport && settings_viewport->bounds().Contains(x, y)) {
+  if (settings_viewport &&
+      settings_viewport->bounds().Contains(logical_x, logical_y)) {
     settings_scroll_offset_ -= scroll_delta;
     Invalidate();
     return;
   }
   ui::Node* message_viewport = interface_root_->FindById(kMessageViewportId);
-  if (message_viewport && message_viewport->bounds().Contains(x, y)) {
+  if (message_viewport &&
+      message_viewport->bounds().Contains(logical_x, logical_y)) {
     message_scroll_offset_ -= scroll_delta;
     message_scroll_pinned_to_bottom_ = false;
     Invalidate();
@@ -766,8 +812,7 @@ void App::OnCaretTimer() {
 }
 
 CursorKind App::CursorAt(float x, float y) {
-  const ui::Node* hit =
-      interface_root_ ? interface_root_->HitTest(x, y) : nullptr;
+  const ui::Node* hit = HitTestDevicePoint(x, y);
   return hit ? hit->style().cursor : CursorKind::kArrow;
 }
 

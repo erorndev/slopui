@@ -3,7 +3,7 @@
 #include "app/App.h"
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int show_command) {
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   if (tvg::Initializer::init(0) != tvg::Result::Success) return 1;
   int exit_code = 1;
   {

@@ -70,9 +70,11 @@ void Renderer::Resize(int width, int height) {
                   tvg::ColorSpace::ARGB8888);
 }
 
-void Renderer::Render(const Node& root, bool caret_visible) {
+void Renderer::Render(const Node& root, bool caret_visible,
+                      float device_pixels_per_point) {
   canvas_->remove();
   tvg::Scene* root_scene = tvg::Scene::gen();
+  root_scene->scale(device_pixels_per_point);
   DrawNode(root, root_scene, caret_visible);
   canvas_->add(root_scene);
   canvas_->draw(true);

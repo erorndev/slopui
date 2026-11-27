@@ -40,6 +40,15 @@ YGSize MeasureTextNode(YGNodeConstRef yoga_node, float available_width,
 
 }
 
+YGConfigRef SharedLayoutConfig() {
+  static YGConfigRef shared_layout_config = YGConfigNew();
+  return shared_layout_config;
+}
+
+void SetLayoutPointScale(float device_pixels_per_point) {
+  YGConfigSetPointScaleFactor(SharedLayoutConfig(), device_pixels_per_point);
+}
+
 float TextWrapWidth(const NodeStyle& style, float box_width) {
   return box_width - (style.shows_caret ? kCaretReservedWidth : 0.0f);
 }
@@ -58,7 +67,9 @@ Rect Rect::Intersect(const Rect& other) const {
           std::max(0.0f, bottom - top)};
 }
 
-Node::Node(std::string id) : yoga_node_(YGNodeNew()), id_(std::move(id)) {
+Node::Node(std::string id)
+    : yoga_node_(YGNodeNewWithConfig(SharedLayoutConfig())),
+      id_(std::move(id)) {
   YGNodeSetContext(yoga_node_, this);
 }
 

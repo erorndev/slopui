@@ -18,6 +18,7 @@ class WindowHandler {
  public:
   virtual ~WindowHandler() = default;
   virtual void OnResize(int client_width, int client_height) = 0;
+  virtual void OnDpiChanged(UINT dots_per_inch) = 0;
   virtual void OnPaint() = 0;
   virtual void OnMouseMove(float x, float y) = 0;
   virtual void OnMouseLeave() = 0;
@@ -31,21 +32,26 @@ class WindowHandler {
 
 class Window {
  public:
-  bool Create(const wchar_t* title, int client_width, int client_height,
-              WindowHandler* handler);
+  bool Create(const wchar_t* title, int logical_client_width,
+              int logical_client_height, WindowHandler* handler);
   void Show(int show_command);
+  void OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
+                           int logical_client_height);
   void Close();
   HWND hwnd() const { return hwnd_; }
   int client_width() const { return client_width_; }
   int client_height() const { return client_height_; }
+  UINT dots_per_inch() const { return dots_per_inch_; }
   std::string ClipboardText() const;
 
  private:
   static LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,
                                           WPARAM wparam, LPARAM lparam);
   LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
+  SIZE OuterSizeForLogicalClient(int logical_width, int logical_height) const;
 
   HWND hwnd_ = nullptr;
+  UINT dots_per_inch_ = USER_DEFAULT_SCREEN_DPI;
   WindowHandler* handler_ = nullptr;
   int client_width_ = 0;
   int client_height_ = 0;

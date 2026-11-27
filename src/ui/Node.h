@@ -58,6 +58,8 @@ struct NodeStyle {
 inline constexpr float kCaretReservedWidth = 2.0f;
 
 float TextWrapWidth(const NodeStyle& style, float box_width);
+YGConfigRef SharedLayoutConfig();
+void SetLayoutPointScale(float device_pixels_per_point);
 
 class Node {
  public:

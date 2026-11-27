@@ -20,7 +20,8 @@ class Renderer {
   Renderer& operator=(const Renderer&) = delete;
 
   void Resize(int width, int height);
-  void Render(const Node& root, bool caret_visible);
+  void Render(const Node& root, bool caret_visible,
+              float device_pixels_per_point);
 
   const uint32_t* pixels() const { return pixels_.data(); }
   int width() const { return width_; }

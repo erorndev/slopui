@@ -14,12 +14,17 @@ constexpr int kMinimumClientWidth = 720;
 constexpr int kMinimumClientHeight = 480;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 
-SIZE OuterSizeForClient(int client_width, int client_height) {
-  RECT rect{0, 0, client_width, client_height};
-  AdjustWindowRect(&rect, kWindowStyle, FALSE);
-  return {rect.right - rect.left, rect.bottom - rect.top};
 }
 
+SIZE Window::OuterSizeForLogicalClient(int logical_width,
+                                       int logical_height) const {
+  RECT rect{0, 0,
+            MulDiv(logical_width, static_cast<int>(dots_per_inch_),
+                   USER_DEFAULT_SCREEN_DPI),
+            MulDiv(logical_height, static_cast<int>(dots_per_inch_),
+                   USER_DEFAULT_SCREEN_DPI)};
+  AdjustWindowRectExForDpi(&rect, kWindowStyle, FALSE, 0, dots_per_inch_);
+  return {rect.right - rect.left, rect.bottom - rect.top};
 }
 
 std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
@@ -32,9 +37,8 @@ std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
   return utf8_text;
 }
 
-bool Window::Create(const wchar_t* title, int client_width, int client_height,
-                    WindowHandler* handler) {
-  handler_ = handler;
+bool Window::Create(const wchar_t* title, int logical_client_width,
+                    int logical_client_height, WindowHandler* handler) {
   HINSTANCE instance = GetModuleHandleW(nullptr);
 
   WNDCLASSEXW window_class{sizeof(window_class)};
@@ -44,21 +48,37 @@ bool Window::Create(const wchar_t* title, int client_width, int client_height,
   window_class.lpszClassName = L"LaleWindow";
   RegisterClassExW(&window_class);
 
-  SIZE outer_size = OuterSizeForClient(client_width, client_height);
   hwnd_ = CreateWindowExW(0, window_class.lpszClassName, title, kWindowStyle,
-                          CW_USEDEFAULT, CW_USEDEFAULT, outer_size.cx,
-                          outer_size.cy, nullptr, nullptr, instance, this);
+                          CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                          CW_USEDEFAULT, nullptr, nullptr, instance, this);
   if (!hwnd_) return false;
+
+  dots_per_inch_ = GetDpiForWindow(hwnd_);
+  SIZE outer_size =
+      OuterSizeForLogicalClient(logical_client_width, logical_client_height);
+  SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
   RECT client_rect{};
   GetClientRect(hwnd_, &client_rect);
   client_width_ = client_rect.right;
   client_height_ = client_rect.bottom;
+  handler_ = handler;
   SetTimer(hwnd_, kCaretTimerId, kCaretBlinkMilliseconds, nullptr);
   return true;
 }
 
 void Window::Show(int show_command) { ShowWindow(hwnd_, show_command); }
+
+void Window::OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
+                                 int logical_client_height) {
+  dots_per_inch_ = dots_per_inch;
+  if (handler_) handler_->OnDpiChanged(dots_per_inch_);
+  SIZE outer_size =
+      OuterSizeForLogicalClient(logical_client_width, logical_client_height);
+  SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
 
 void Window::Close() { DestroyWindow(hwnd_); }
 
@@ -98,8 +118,18 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_GETMINMAXINFO: {
       auto* min_max_info = reinterpret_cast<MINMAXINFO*>(lparam);
       SIZE minimum_size =
-          OuterSizeForClient(kMinimumClientWidth, kMinimumClientHeight);
+          OuterSizeForLogicalClient(kMinimumClientWidth, kMinimumClientHeight);
       min_max_info->ptMinTrackSize = {minimum_size.cx, minimum_size.cy};
+      return 0;
+    }
+    case WM_DPICHANGED: {
+      dots_per_inch_ = HIWORD(wparam);
+      handler_->OnDpiChanged(dots_per_inch_);
+      const auto* suggested_rect = reinterpret_cast<const RECT*>(lparam);
+      SetWindowPos(hwnd_, nullptr, suggested_rect->left, suggested_rect->top,
+                   suggested_rect->right - suggested_rect->left,
+                   suggested_rect->bottom - suggested_rect->top,
+                   SWP_NOZORDER | SWP_NOACTIVATE);
       return 0;
     }
     case WM_SIZE: {

@@ -89,6 +89,13 @@ void Window::UseDarkTitleBar(bool dark_title_bar) {
                         &immersive_dark_mode, sizeof(immersive_dark_mode));
 }
 
+void Window::SetTitleBarColors(COLORREF caption_color, COLORREF text_color) {
+  DwmSetWindowAttribute(hwnd_, DWMWA_CAPTION_COLOR, &caption_color,
+                        sizeof(caption_color));
+  DwmSetWindowAttribute(hwnd_, DWMWA_TEXT_COLOR, &text_color,
+                        sizeof(text_color));
+}
+
 std::string Window::ClipboardText() const {
   std::string clipboard_text;
   if (!OpenClipboard(hwnd_)) return clipboard_text;

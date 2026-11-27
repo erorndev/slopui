@@ -41,6 +41,7 @@ class Window {
                            int logical_client_height);
   void Close();
   void UseDarkTitleBar(bool dark_title_bar);
+  void SetTitleBarColors(COLORREF caption_color, COLORREF text_color);
   HWND hwnd() const { return hwnd_; }
   int client_width() const { return client_width_; }
   int client_height() const { return client_height_; }

@@ -38,7 +38,7 @@ struct GenerationSettings {
   std::string system_prompt = "You are a helpful assistant.";
 };
 
-enum class ButtonStyle { kPrimary, kSecondary, kPlain };
+enum class ButtonStyle { kPrimary, kSecondary, kLink };
 
 class App : public WindowHandler {
  public:
@@ -97,6 +97,9 @@ class App : public WindowHandler {
                             ButtonStyle style, bool enabled = true);
   ui::Node* BuildIcon(ui::Node* parent, ui::IconKind icon, ui::Color color,
                       float size);
+  ui::Node* BuildKeyHint(ui::Node* parent, std::string keys);
+  ui::Node* BuildStatusDot(ui::Node* parent, ui::Color color);
+  void BuildNotice(ui::Node* parent, const std::string& text);
   ui::Node* BuildLabel(ui::Node* parent, std::string text, const ui::Font* font,
                        ui::Color color, bool wraps_text = false);
   ui::Color InteractiveFill(std::string_view node_id, ui::Color resting,
@@ -118,6 +121,10 @@ class App : public WindowHandler {
   theme::Palette palette_;
   std::unique_ptr<ui::Font> caption_font_;
   std::unique_ptr<ui::Font> caption_strong_font_;
+  std::unique_ptr<ui::Font> label_font_;
+  std::unique_ptr<ui::Font> label_strong_font_;
+  std::unique_ptr<ui::Font> monospace_caption_font_;
+  std::unique_ptr<ui::Font> monospace_body_font_;
   std::unique_ptr<ui::Font> body_font_;
   std::unique_ptr<ui::Font> body_strong_font_;
   std::unique_ptr<ui::Font> headline_font_;

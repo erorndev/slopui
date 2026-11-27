@@ -30,13 +30,31 @@ struct Rect {
   Rect Intersect(const Rect& other) const;
 };
 
-enum class IconKind { kNone, kMinus, kPlus, kClose, kArrowUp, kChevronDown };
+enum class IconKind {
+  kNone,
+  kMinus,
+  kPlus,
+  kClose,
+  kArrowUp,
+  kChevronDown,
+  kTulip
+};
+
+struct Shadow {
+  float offset_y = 0;
+  float blur = 0;
+  float spread = 0;
+  Color color;
+};
 
 struct NodeStyle {
+  std::vector<Shadow> shadows;
   Color background;
   float corner_radius = 0;
   Color border;
   float border_width = 0;
+  Color outer_ring;
+  float outer_ring_width = 0;
 
   std::string text;
   std::string placeholder;

@@ -6,83 +6,103 @@ namespace lale::theme {
 
 namespace {
 
-constexpr uint32_t kFallbackAccentForDarkMode = 0x60CDFF;
-constexpr uint32_t kFallbackAccentForLightMode = 0x005FB8;
-
 ui::Color Opaque(uint32_t rgb) {
   return {static_cast<uint8_t>(rgb >> 16), static_cast<uint8_t>(rgb >> 8),
           static_cast<uint8_t>(rgb), 255};
 }
 
-ui::Color Mix(const ui::Color& from, const ui::Color& to, float amount) {
-  auto blend = [amount](uint8_t a, uint8_t b) {
-    return static_cast<uint8_t>(a + (b - a) * amount + 0.5f);
-  };
-  return {blend(from.red, to.red), blend(from.green, to.green),
-          blend(from.blue, to.blue), 255};
+ui::Color Translucent(uint32_t rgb, uint8_t alpha) {
+  ui::Color color = Opaque(rgb);
+  color.alpha = alpha;
+  return color;
 }
 
-float RelativeLuminance(const ui::Color& color) {
-  return (0.2126f * color.red + 0.7152f * color.green + 0.0722f * color.blue) /
-         255.0f;
+ui::Shadow MakeShadow(float offset_y, float blur, float spread,
+                      uint8_t black_alpha) {
+  return {offset_y, blur, spread, Translucent(0x000000, black_alpha)};
+}
+
+Palette MakeDarkPalette() {
+  Palette palette;
+  palette.is_dark = true;
+  palette.background_primary = Opaque(0x0A0A0A);
+  palette.background_secondary = Opaque(0x000000);
+  palette.component_background = Opaque(0x1A1A1A);
+  palette.component_hover = Opaque(0x1F1F1F);
+  palette.component_active = Opaque(0x292929);
+  palette.border = Translucent(0xFFFFFF, 0x24);
+  palette.border_hover = Translucent(0xFFFFFF, 0x3D);
+  palette.border_focus = Translucent(0xFFFFFF, 0x82);
+  palette.focus_halo = Translucent(0xFFFFFF, 0x21);
+  palette.overlay_hover = Translucent(0xFFFFFF, 0x0F);
+  palette.overlay_selected = Translucent(0xFFFFFF, 0x17);
+  palette.overlay_pressed = Translucent(0xFFFFFF, 0x21);
+  palette.high_contrast = Opaque(0xEDEDED);
+  palette.high_contrast_hover = Opaque(0xCCCCCC);
+  palette.text_on_high_contrast = Opaque(0x0A0A0A);
+  palette.text_primary = Opaque(0xEDEDED);
+  palette.text_secondary = Opaque(0xA1A1A1);
+  palette.text_tertiary = Opaque(0x8F8F8F);
+  palette.accent = Opaque(0x0072F5);
+  palette.accent_text = Opaque(0x52A8FF);
+  palette.warning_background = Opaque(0x291800);
+  palette.warning_border = Opaque(0x573300);
+  palette.warning_text = Opaque(0xF2A20D);
+  palette.warning_indicator = Opaque(0xFFB224);
+  palette.success_indicator = Opaque(0x45A557);
+  palette.toggle_off = Opaque(0x454545);
+  palette.toggle_knob = Opaque(0xFFFFFF);
+  palette.shadow_small = {MakeShadow(1, 2, 0, 0x29)};
+  palette.shadow_medium = {MakeShadow(2, 2, 0, 0x52),
+                           MakeShadow(8, 8, -8, 0x29)};
+  palette.shadow_large = {MakeShadow(2, 2, 0, 0x52),
+                          MakeShadow(8, 16, -4, 0x3D),
+                          MakeShadow(24, 32, -8, 0x3D)};
+  return palette;
+}
+
+Palette MakeLightPalette() {
+  Palette palette;
+  palette.is_dark = false;
+  palette.background_primary = Opaque(0xFFFFFF);
+  palette.background_secondary = Opaque(0xFAFAFA);
+  palette.component_background = Opaque(0xF2F2F2);
+  palette.component_hover = Opaque(0xEBEBEB);
+  palette.component_active = Opaque(0xE6E6E6);
+  palette.border = Translucent(0x000000, 0x14);
+  palette.border_hover = Translucent(0x000000, 0x36);
+  palette.border_focus = Translucent(0x000000, 0x57);
+  palette.focus_halo = Translucent(0x000000, 0x1A);
+  palette.overlay_hover = Translucent(0x000000, 0x0D);
+  palette.overlay_selected = Translucent(0x000000, 0x14);
+  palette.overlay_pressed = Translucent(0x000000, 0x1A);
+  palette.high_contrast = Opaque(0x171717);
+  palette.high_contrast_hover = Opaque(0x383838);
+  palette.text_on_high_contrast = Opaque(0xFFFFFF);
+  palette.text_primary = Opaque(0x171717);
+  palette.text_secondary = Opaque(0x4D4D4D);
+  palette.text_tertiary = Opaque(0x8F8F8F);
+  palette.accent = Opaque(0x0072F5);
+  palette.accent_text = Opaque(0x0068D6);
+  palette.warning_background = Opaque(0xFFF6E6);
+  palette.warning_border = Opaque(0xFFDD8F);
+  palette.warning_text = Opaque(0xA35200);
+  palette.warning_indicator = Opaque(0xFFB224);
+  palette.success_indicator = Opaque(0x45A557);
+  palette.toggle_off = Opaque(0xC9C9C9);
+  palette.toggle_knob = Opaque(0xFFFFFF);
+  palette.shadow_small = {MakeShadow(2, 2, 0, 0x0A)};
+  palette.shadow_medium = {MakeShadow(2, 2, 0, 0x0A),
+                           MakeShadow(8, 8, -8, 0x0A)};
+  palette.shadow_large = {MakeShadow(1, 1, 0, 0x05), MakeShadow(4, 8, -4, 0x0A),
+                          MakeShadow(16, 24, -8, 0x0F)};
+  return palette;
 }
 
 }
 
 Palette MakePalette(const SystemAppearance& appearance) {
-  Palette palette;
-  palette.is_dark = appearance.prefers_dark_mode;
-  uint32_t accent_rgb = 0;
-  if (appearance.has_accent) {
-    accent_rgb = palette.is_dark ? appearance.accent.lighter_rgb
-                                 : appearance.accent.darker_rgb;
-  } else {
-    accent_rgb = palette.is_dark ? kFallbackAccentForDarkMode
-                                 : kFallbackAccentForLightMode;
-  }
-  palette.accent = Opaque(accent_rgb);
-
-  if (palette.is_dark) {
-    palette.window_background = Opaque(0x202020);
-    palette.sidebar_background = Opaque(0x1A1A1A);
-    palette.card_background = Opaque(0x2B2B2B);
-    palette.control_background = Opaque(0x2D2D2D);
-    palette.control_hover = Opaque(0x333333);
-    palette.control_pressed = Opaque(0x282828);
-    palette.selected_background = Opaque(0x2F2F2F);
-    palette.separator = Opaque(0x383838);
-    palette.text_primary = Opaque(0xF2F2F2);
-    palette.text_secondary = Opaque(0xB8B8B8);
-    palette.text_tertiary = Opaque(0x8A8A8A);
-    palette.toggle_off = Opaque(0x4A4A4A);
-    palette.toggle_knob = Opaque(0xFFFFFF);
-    palette.accent_hover = Mix(palette.accent, Opaque(0xFFFFFF), 0.12f);
-    palette.accent_pressed = Mix(palette.accent, Opaque(0x000000), 0.12f);
-    palette.accent_disabled = Opaque(0x3A3A3A);
-    palette.text_on_accent_disabled = Opaque(0x7A7A7A);
-  } else {
-    palette.window_background = Opaque(0xFAFAFA);
-    palette.sidebar_background = Opaque(0xF0F0F0);
-    palette.card_background = Opaque(0xFFFFFF);
-    palette.control_background = Opaque(0xFFFFFF);
-    palette.control_hover = Opaque(0xE8E8E8);
-    palette.control_pressed = Opaque(0xDEDEDE);
-    palette.selected_background = Opaque(0xE3E3E3);
-    palette.separator = Opaque(0xE0E0E0);
-    palette.text_primary = Opaque(0x1B1B1B);
-    palette.text_secondary = Opaque(0x5C5C5C);
-    palette.text_tertiary = Opaque(0x8A8A8A);
-    palette.toggle_off = Opaque(0xC8C8C8);
-    palette.toggle_knob = Opaque(0xFFFFFF);
-    palette.accent_hover = Mix(palette.accent, Opaque(0xFFFFFF), 0.10f);
-    palette.accent_pressed = Mix(palette.accent, Opaque(0x000000), 0.10f);
-    palette.accent_disabled = Opaque(0xDADADA);
-    palette.text_on_accent_disabled = Opaque(0x9A9A9A);
-  }
-  palette.text_on_accent = RelativeLuminance(palette.accent) > 0.55f
-                               ? Opaque(0x000000)
-                               : Opaque(0xFFFFFF);
-  return palette;
+  return appearance.prefers_dark_mode ? MakeDarkPalette() : MakeLightPalette();
 }
 
 }

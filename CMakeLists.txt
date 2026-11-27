@@ -31,3 +31,10 @@ if(llama_FOUND)
     target_link_libraries(lale PRIVATE llama)
 endif()
 target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
+
+add_custom_command(TARGET lale POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:lale>/fonts
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-Regular.ttf
+        ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-SemiBold.ttf
+        $<TARGET_FILE_DIR:lale>/fonts)

@@ -1,4 +1,4 @@
-#include "app/Conversation.h"
+﻿#include "app/Conversation.h"
 
 #include <charconv>
 #include <sstream>
@@ -19,7 +19,7 @@ constexpr std::string_view kStatisticsKey = "stats";
 }
 
 std::filesystem::path ConversationsFilePath() {
-  return AppDataFilePath(L"conversations.ini");
+  return AppDataFilePath("conversations.ini");
 }
 
 std::vector<Conversation> LoadConversations(

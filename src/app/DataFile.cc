@@ -1,29 +1,16 @@
 #include "app/DataFile.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <shlobj.h>
-#include <windows.h>
-
 #include <fstream>
 #include <system_error>
 
+#include "platform/Platform.h"
+
 namespace lale {
 
-std::filesystem::path AppDataFilePath(std::wstring_view file_name) {
-  PWSTR roaming_folder = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT,
-                                  nullptr, &roaming_folder))) {
-    return {};
-  }
-  std::filesystem::path file_path =
-      std::filesystem::path(roaming_folder) / L"Lale" / file_name;
-  CoTaskMemFree(roaming_folder);
-  return file_path;
+std::filesystem::path AppDataFilePath(std::string_view file_name) {
+  std::filesystem::path directory = UserDataDirectory();
+  if (directory.empty()) return {};
+  return directory / file_name;
 }
 
 std::string EscapeLineValue(std::string_view value) {
@@ -83,7 +70,7 @@ bool WriteFileAtomically(const std::filesystem::path& file_path,
   std::error_code error;
   std::filesystem::create_directories(file_path.parent_path(), error);
   std::filesystem::path temporary_path = file_path;
-  temporary_path += L".tmp";
+  temporary_path += ".tmp";
   {
     std::ofstream file(temporary_path, std::ios::binary | std::ios::trunc);
     if (!file) return false;

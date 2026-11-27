@@ -1,4 +1,4 @@
-#include "app/App.h"
+﻿#include "app/App.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "platform/FileDialog.h"
+#include "platform/Platform.h"
 #include "platform/SystemAppearance.h"
 
 namespace lale {
@@ -45,25 +46,21 @@ constexpr std::string_view kLoadingNotice =
 constexpr int kInitialLogicalWidth = 1280;
 constexpr int kInitialLogicalHeight = 800;
 
-UINT DotsPerInchOverrideFromEnvironment() {
-  char override_text[16] = {};
-  DWORD length =
-      GetEnvironmentVariableA("LALE_DPI", override_text, sizeof(override_text));
-  if (length == 0 || length >= sizeof(override_text)) return 0;
-  int parsed_dots_per_inch = std::atoi(override_text);
+int DotsPerInchOverrideFromEnvironment() {
+  std::optional<std::string> override_text = EnvironmentVariable("LALE_DPI");
+  if (!override_text) return 0;
+  int parsed_dots_per_inch = std::atoi(override_text->c_str());
   return parsed_dots_per_inch >= 48 && parsed_dots_per_inch <= 480
-             ? static_cast<UINT>(parsed_dots_per_inch)
+             ? parsed_dots_per_inch
              : 0;
 }
 
 void ApplyThemeOverrideFromEnvironment(SystemAppearance* appearance) {
-  char override_text[16] = {};
-  DWORD length = GetEnvironmentVariableA("LALE_THEME", override_text,
-                                         sizeof(override_text));
-  if (length == 0 || length >= sizeof(override_text)) return;
-  if (std::strcmp(override_text, "light") == 0) {
+  std::optional<std::string> override_text = EnvironmentVariable("LALE_THEME");
+  if (!override_text) return;
+  if (*override_text == "light") {
     appearance->prefers_dark_mode = false;
-  } else if (std::strcmp(override_text, "dark") == 0) {
+  } else if (*override_text == "dark") {
     appearance->prefers_dark_mode = true;
   }
 }
@@ -135,28 +132,24 @@ std::string NormalizeLineEndings(std::string_view text) {
   return normalized;
 }
 
-std::string WindowsFontPath(const char* file_name) {
-  char windows_directory[MAX_PATH] = {};
-  GetWindowsDirectoryA(windows_directory, MAX_PATH);
-  return std::string(windows_directory) + "\\Fonts\\" + file_name;
-}
-
-std::string BundledFontPath(const char* file_name) {
-  char executable_path[MAX_PATH] = {};
-  GetModuleFileNameA(nullptr, executable_path, MAX_PATH);
-  std::string directory(executable_path);
-  directory.resize(directory.find_last_of("/\\") + 1);
-  return directory + "fonts\\" + file_name;
+std::vector<std::filesystem::path> FontSearchDirectories() {
+  std::vector<std::filesystem::path> directories = {ExecutableDirectory() /
+                                                    "fonts"};
+  for (std::filesystem::path& directory : SystemFontDirectories()) {
+    directories.push_back(std::move(directory));
+  }
+  return directories;
 }
 
 std::string LoadFirstAvailableFont(
     std::initializer_list<const char*> file_names) {
+  static const std::vector<std::filesystem::path> font_directories =
+      FontSearchDirectories();
   for (const char* file_name : file_names) {
-    std::string font_key = ui::LoadFontFile(BundledFontPath(file_name));
-    if (font_key.empty()) {
-      font_key = ui::LoadFontFile(WindowsFontPath(file_name));
+    for (const std::filesystem::path& directory : font_directories) {
+      std::string font_key = ui::LoadFontFile((directory / file_name).string());
+      if (!font_key.empty()) return font_key;
     }
-    if (!font_key.empty()) return font_key;
   }
   return {};
 }
@@ -228,28 +221,27 @@ void App::SaveSettingsIfChanged() {
   }
 }
 
-bool App::Initialize(int show_command) {
+bool App::Initialize() {
   LoadFonts();
   ApplySystemAppearance();
-  main_window_show_command_ = show_command;
   splash_opened_at_ = std::chrono::steady_clock::now();
   splash_.Open(palette_, {title_font_.get(), caption_font_.get()});
-  if (!window_.Create(L"Lale", kInitialLogicalWidth, kInitialLogicalHeight,
-                      this)) {
+  if (!window_->Create("Lale", kInitialLogicalWidth, kInitialLogicalHeight,
+                       this, WindowKind::kMain)) {
     return false;
   }
   ApplySystemAppearance();
-  OnDpiChanged(window_.dots_per_inch());
-  if (!presenter_.Initialize(window_.hwnd(), window_.client_width(),
-                             window_.client_height())) {
+  OnDpiChanged(window_->dots_per_inch());
+  if (!presenter_->Initialize(*window_, window_->client_width(),
+                              window_->client_height())) {
     return false;
   }
-  if (UINT override_dots_per_inch = DotsPerInchOverrideFromEnvironment()) {
-    window_.OverrideDotsPerInch(override_dots_per_inch, kInitialLogicalWidth,
-                                kInitialLogicalHeight);
+  if (int override_dots_per_inch = DotsPerInchOverrideFromEnvironment()) {
+    window_->OverrideDotsPerInch(override_dots_per_inch, kInitialLogicalWidth,
+                                 kInitialLogicalHeight);
   }
   inference_engine_ =
-      std::make_unique<llm::InferenceEngine>([this] { window_.PostWake(); });
+      std::make_unique<llm::InferenceEngine>([this] { window_->PostWake(); });
   RequestModelLoad();
   focused_field_id_ = std::string(kComposerFieldId);
   if (!splash_.is_open()) ShowMainWindow();
@@ -260,8 +252,8 @@ void App::ShowMainWindow() {
   if (main_window_shown_) return;
   main_window_shown_ = true;
   RenderFrame();
-  window_.Show(main_window_show_command_);
-  window_.BringToFront();
+  window_->Show();
+  window_->BringToFront();
   splash_.Close();
 }
 
@@ -275,7 +267,7 @@ void App::AdvanceStartup() {
   if (model_state_ == ModelState::kLoading) {
     splash_.SetStatus(ModelLoadingText(), model_load_progress_);
   } else {
-    splash_.SetStatus("Starting…", -1);
+    splash_.SetStatus("Startingâ€¦", -1);
   }
   if ((model_settled && seconds_open >= kSplashMinimumSeconds) ||
       seconds_open >= kSplashMaximumSeconds) {
@@ -309,8 +301,8 @@ void App::RememberRecentModel(const std::string& model_path) {
 }
 
 std::string App::ModelLoadingText() const {
-  if (model_load_progress_ >= 1) return "Preparing the model…";
-  return "Loading the model… " +
+  if (model_load_progress_ >= 1) return "Preparing the modelâ€¦";
+  return "Loading the modelâ€¦ " +
          std::to_string(static_cast<int>(model_load_progress_ * 100)) + "%";
 }
 
@@ -405,18 +397,13 @@ void App::HandleEngineEvent(const llm::EngineEvent& event) {
 }
 
 int App::Run() {
-  MSG message{};
   while (true) {
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      if (message.message == WM_QUIT) return static_cast<int>(message.wParam);
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
+    if (std::optional<int> exit_code = PumpEvents()) return *exit_code;
     AdvanceStartup();
     if (needs_render_ && main_window_shown_) {
       RenderFrame();
     } else {
-      WaitMessage();
+      WaitForEvents();
     }
   }
 }
@@ -476,7 +463,7 @@ void App::ApplySystemAppearance() {
     appearance.prefers_dark_mode = theme_preference_ == ThemePreference::kDark;
   }
   palette_ = theme::MakePalette(appearance);
-  window_.UseDarkTitleBar(palette_.is_dark);
+  window_->UseDarkTitleBar(palette_.is_dark);
   Invalidate();
 }
 
@@ -500,17 +487,19 @@ void App::RenderFrame() {
     interface_root_ = BuildInterface();
     LayoutInterface(interface_root_.get());
   }
-  renderer_.Resize(window_.client_width(), window_.client_height());
+  renderer_.Resize(window_->client_width(), window_->client_height());
   renderer_.Render(*interface_root_, caret_visible_, device_pixels_per_point_);
-  presenter_.Present(renderer_.pixels(), renderer_.width(), renderer_.height());
+  presenter_->Present(renderer_.pixels(), renderer_.width(),
+                      renderer_.height());
 }
 
 float App::LogicalClientWidth() const {
-  return static_cast<float>(window_.client_width()) / device_pixels_per_point_;
+  return static_cast<float>(window_->client_width()) / device_pixels_per_point_;
 }
 
 float App::LogicalClientHeight() const {
-  return static_cast<float>(window_.client_height()) / device_pixels_per_point_;
+  return static_cast<float>(window_->client_height()) /
+         device_pixels_per_point_;
 }
 
 const ui::Node* App::HitTestDevicePoint(float device_x, float device_y) const {
@@ -589,8 +578,8 @@ void App::BuildTitleBar(ui::Node* parent) {
   BuildCaptionButton(title_bar, std::string(kMinimizeButtonId),
                      ui::IconKind::kWindowMinimize);
   BuildCaptionButton(title_bar, std::string(kMaximizeButtonId),
-                     window_.is_maximized() ? ui::IconKind::kWindowRestore
-                                            : ui::IconKind::kWindowMaximize);
+                     window_->is_maximized() ? ui::IconKind::kWindowRestore
+                                             : ui::IconKind::kWindowMaximize);
   BuildCaptionButton(title_bar, std::string(kCloseButtonId),
                      ui::IconKind::kWindowClose);
   AddHorizontalRule(parent, palette_.border);
@@ -1059,7 +1048,7 @@ void App::BuildTopBar(ui::Node* parent) {
     BuildLabel(
         model_picker,
         model_load_progress_ >= 1
-            ? std::string("…")
+            ? std::string("â€¦")
             : std::to_string(static_cast<int>(model_load_progress_ * 100)) +
                   "%",
         monospace_caption_font_.get(), palette_.text_secondary);
@@ -1150,7 +1139,7 @@ void App::BuildMessageList(ui::Node* parent) {
           message.is_streaming &&
           (message.text.empty() || !generation_settings_.stream_tokens);
       if (waiting_for_text) {
-        BuildLabel(reply_card, "Writing…", body_font_.get(),
+        BuildLabel(reply_card, "Writingâ€¦", body_font_.get(),
                    palette_.text_tertiary);
       } else {
         BuildMarkdown(reply_card, message.text);
@@ -1210,16 +1199,16 @@ void App::BuildMessageActions(ui::Node* parent, size_t message_index,
 
 std::string App::StreamingStatusText(const ChatMessage& message) const {
   if (message.generated_token_count == 0) {
-    if (message.prompt_token_count == 0) return "Starting…";
-    return std::format("Reading {} tokens of conversation…",
+    if (message.prompt_token_count == 0) return "Startingâ€¦";
+    return std::format("Reading {} tokens of conversationâ€¦",
                        message.prompt_token_count);
   }
-  return std::format("{} tokens · {:.1f} tokens/s",
+  return std::format("{} tokens Â· {:.1f} tokens/s",
                      message.generated_token_count, TokensPerSecond(message));
 }
 
 std::string App::FinishedStatisticsText(const ChatMessage& message) const {
-  return std::format("{} tokens · {:.1f} tokens/s · {:.1f} s",
+  return std::format("{} tokens Â· {:.1f} tokens/s Â· {:.1f} s",
                      message.generated_token_count, TokensPerSecond(message),
                      message.generation_seconds);
 }
@@ -2106,11 +2095,11 @@ void App::HandleClick(const std::string& node_id) {
       CopyToClipboard(copyable_code_blocks_[index], node_id);
     }
   } else if (node_id == kMinimizeButtonId) {
-    window_.Minimize();
+    window_->Minimize();
   } else if (node_id == kMaximizeButtonId) {
-    window_.ToggleMaximize();
+    window_->ToggleMaximize();
   } else if (node_id == kCloseButtonId) {
-    window_.Close();
+    window_->Close();
   } else if (node_id == "new-chat") {
     StartNewConversation();
   } else if (StartsWith(node_id, kConversationIdPrefix)) {
@@ -2188,7 +2177,7 @@ void App::ChooseModelFile() {
   pressed_node_id_.clear();
   hovered_node_id_.clear();
   std::optional<std::string> chosen_path =
-      ShowOpenFileDialog(window_.hwnd(), L"GGUF models (*.gguf)", L"*.gguf");
+      ShowOpenFileDialog(*window_, "GGUF models (*.gguf)", "gguf");
   if (chosen_path) {
     generation_settings_.model_path = std::move(*chosen_path);
     RequestModelLoad();
@@ -2385,7 +2374,7 @@ void App::DeleteActiveConversation() {
 }
 
 void App::CopyToClipboard(std::string_view text, const std::string& button_id) {
-  window_.SetClipboardText(text);
+  window_->SetClipboardText(text);
   copied_button_id_ = button_id;
 }
 
@@ -2407,13 +2396,13 @@ void App::StartNewConversation() {
 }
 
 void App::OnResize(int client_width, int client_height) {
-  presenter_.Resize(client_width, client_height);
+  presenter_->Resize(client_width, client_height);
   RenderFrame();
 }
 
-void App::OnDpiChanged(UINT dots_per_inch) {
+void App::OnDpiChanged(int dots_per_inch) {
   device_pixels_per_point_ = static_cast<float>(dots_per_inch) /
-                             static_cast<float>(USER_DEFAULT_SCREEN_DPI);
+                             static_cast<float>(kDefaultDotsPerInch);
   ui::SetLayoutPointScale(device_pixels_per_point_);
   Invalidate();
 }
@@ -2501,17 +2490,16 @@ void App::EditFocusedText(std::string_view replacement, bool is_typing) {
   ResetCaretBlink();
 }
 
-bool App::HandleEditingKey(UINT virtual_key, bool control_down,
-                           bool shift_down) {
+bool App::HandleEditingKey(Key key, bool control_down, bool shift_down) {
   std::optional<TextFieldEditor> editor = FocusedEditor();
   if (!editor) return false;
   std::string& text = *editor->text;
   ui::TextSelection& selection = *editor->selection;
-  const bool keeps_preferred_x = virtual_key == VK_UP || virtual_key == VK_DOWN;
+  const bool keeps_preferred_x = key == Key::kUp || key == Key::kDown;
   if (!keeps_preferred_x) preferred_caret_x_ = -1;
 
-  switch (virtual_key) {
-    case VK_LEFT:
+  switch (key) {
+    case Key::kLeft:
       if (!shift_down && !selection.empty()) {
         ui::MoveCaret(&selection, selection.begin(), false);
       } else {
@@ -2522,7 +2510,7 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
                       shift_down);
       }
       break;
-    case VK_RIGHT:
+    case Key::kRight:
       if (!shift_down && !selection.empty()) {
         ui::MoveCaret(&selection, selection.end(), false);
       } else {
@@ -2532,22 +2520,22 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
                       shift_down);
       }
       break;
-    case VK_HOME:
+    case Key::kHome:
       ui::MoveCaret(&selection,
                     control_down ? 0
                                  : ui::VisualLineStart(FocusedFieldLines(),
                                                        selection.caret),
                     shift_down);
       break;
-    case VK_END:
+    case Key::kEnd:
       ui::MoveCaret(&selection,
                     control_down ? text.size()
                                  : ui::VisualLineEnd(text, FocusedFieldLines(),
                                                      selection.caret),
                     shift_down);
       break;
-    case VK_UP:
-    case VK_DOWN: {
+    case Key::kUp:
+    case Key::kDown: {
       const ui::Node* text_node = FocusedTextNode();
       if (!text_node) return true;
       const ui::Font& font = *text_node->style().font;
@@ -2555,7 +2543,7 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
       const ui::CaretLocation location =
           ui::LocateCaret(font, text, lines, selection.caret);
       if (preferred_caret_x_ < 0) preferred_caret_x_ = location.x;
-      const bool moving_up = virtual_key == VK_UP;
+      const bool moving_up = key == Key::kUp;
       size_t target_byte = 0;
       if (moving_up && location.line_index == 0) {
         target_byte = 0;
@@ -2571,7 +2559,7 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
       ui::MoveCaret(&selection, target_byte, shift_down);
       break;
     }
-    case VK_BACK:
+    case Key::kBackspace:
       if (selection.empty()) {
         selection.anchor = control_down
                                ? ui::PreviousWordStart(text, selection.caret)
@@ -2579,7 +2567,7 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
       }
       EditFocusedText({}, false);
       return true;
-    case VK_DELETE:
+    case Key::kDelete:
       if (selection.empty()) {
         selection.anchor = control_down
                                ? ui::NextWordEnd(text, selection.caret)
@@ -2587,7 +2575,7 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
       }
       EditFocusedText({}, false);
       return true;
-    case VK_RETURN:
+    case Key::kEnter:
       if (focused_field_id_ == kComposerFieldId && !shift_down) {
         SendComposerMessage();
       } else if (focused_field_id_ == kRenameFieldId) {
@@ -2598,18 +2586,18 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
       return true;
     default:
       if (!control_down) return false;
-      if (virtual_key == 'A') {
+      if (key == Key::kA) {
         selection.anchor = 0;
         selection.caret = text.size();
-      } else if (virtual_key == 'C' || virtual_key == 'X') {
+      } else if (key == Key::kC || key == Key::kX) {
         if (selection.empty()) return true;
-        window_.SetClipboardText(ui::SelectedText(text, selection));
-        if (virtual_key == 'X') EditFocusedText({}, false);
-      } else if (virtual_key == 'V') {
-        EditFocusedText(NormalizeLineEndings(window_.ClipboardText()), false);
-      } else if (virtual_key == 'Z' && !shift_down) {
+        window_->SetClipboardText(ui::SelectedText(text, selection));
+        if (key == Key::kX) EditFocusedText({}, false);
+      } else if (key == Key::kV) {
+        EditFocusedText(NormalizeLineEndings(window_->ClipboardText()), false);
+      } else if (key == Key::kZ && !shift_down) {
         editor->history->Undo(&text, &selection);
-      } else if (virtual_key == 'Y' || virtual_key == 'Z') {
+      } else if (key == Key::kY || key == Key::kZ) {
         editor->history->Redo(&text, &selection);
       } else {
         return false;
@@ -2705,13 +2693,13 @@ void App::OnText(const std::string& utf8_text) {
   EditFocusedText(utf8_text, true);
 }
 
-void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
-  if (control_down && virtual_key == 'N') {
+void App::OnKey(Key key, bool control_down, bool shift_down) {
+  if (control_down && key == Key::kN) {
     StartNewConversation();
     ResetCaretBlink();
     return;
   }
-  if (control_down && virtual_key == VK_OEM_COMMA) {
+  if (control_down && key == Key::kComma) {
     if (settings_page_open_) {
       CloseSettings();
     } else {
@@ -2721,12 +2709,11 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     return;
   }
   if (control_down && !FocusedEditor()) {
-    if (virtual_key == 'C' && HasMessageSelection()) {
-      window_.SetClipboardText(SelectedMessageText());
+    if (key == Key::kC && HasMessageSelection()) {
+      window_->SetClipboardText(SelectedMessageText());
       return;
     }
-    if (virtual_key == 'A' && !settings_page_open_ &&
-        !selectable_texts_.empty()) {
+    if (key == Key::kA && !settings_page_open_ && !selectable_texts_.empty()) {
       message_selection_anchor_ = {};
       message_selection_focus_ = {selectable_texts_.size() - 1,
                                   selectable_texts_.back().text.size()};
@@ -2734,7 +2721,7 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
       return;
     }
   }
-  if (virtual_key == VK_ESCAPE) {
+  if (key == Key::kEscape) {
     delete_confirmation_pending_ = false;
     ClearMessageSelection();
     if (renaming_conversation_) {
@@ -2747,7 +2734,7 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     Invalidate();
     return;
   }
-  if (HandleEditingKey(virtual_key, control_down, shift_down)) Invalidate();
+  if (HandleEditingKey(key, control_down, shift_down)) Invalidate();
 }
 
 void App::OnCaretTimer() {

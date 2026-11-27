@@ -1,27 +1,24 @@
-#include "platform/FileDialog.h"
-
 #include <shobjidl.h>
 
 #include <cwchar>
 
+#include "platform/FileDialog.h"
+#include "platform/win32/Win32Window.h"
+
 namespace lale {
 
-bool InitializeComApartment() {
-  return SUCCEEDED(CoInitializeEx(
-      nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
-}
-
-void ShutdownComApartment() { CoUninitialize(); }
-
-std::optional<std::string> ShowOpenFileDialog(HWND owner,
-                                              const wchar_t* filter_name,
-                                              const wchar_t* filter_pattern) {
+std::optional<std::string> ShowOpenFileDialog(const Window& owner,
+                                              std::string_view filter_name,
+                                              std::string_view file_extension) {
   IFileOpenDialog* dialog = nullptr;
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
                               CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
     return std::nullopt;
   }
-  COMDLG_FILTERSPEC filter{filter_name, filter_pattern};
+  const std::wstring wide_filter_name = Utf8ToWide(filter_name);
+  const std::wstring wide_filter_pattern = L"*." + Utf8ToWide(file_extension);
+  COMDLG_FILTERSPEC filter{wide_filter_name.c_str(),
+                           wide_filter_pattern.c_str()};
   dialog->SetFileTypes(1, &filter);
   DWORD options = 0;
   dialog->GetOptions(&options);
@@ -29,7 +26,9 @@ std::optional<std::string> ShowOpenFileDialog(HWND owner,
 
   std::optional<std::string> chosen_path;
   IShellItem* result = nullptr;
-  if (SUCCEEDED(dialog->Show(owner)) && SUCCEEDED(dialog->GetResult(&result))) {
+  HWND owner_handle = static_cast<HWND>(owner.native_handle());
+  if (SUCCEEDED(dialog->Show(owner_handle)) &&
+      SUCCEEDED(dialog->GetResult(&result))) {
     PWSTR wide_path = nullptr;
     if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &wide_path))) {
       chosen_path =

@@ -10,7 +10,7 @@ namespace lale {
 
 using KeyValueLine = std::pair<std::string, std::string>;
 
-std::filesystem::path AppDataFilePath(std::wstring_view file_name);
+std::filesystem::path AppDataFilePath(std::string_view file_name);
 std::string EscapeLineValue(std::string_view value);
 std::string UnescapeLineValue(std::string_view value);
 std::vector<KeyValueLine> ReadKeyValueLines(

@@ -18,11 +18,7 @@ add_executable(lale WIN32
     src/app/Settings.cc
     src/app/SplashScreen.cc
     src/app/Theme.cc
-    src/gfx/Presenter.cc
     src/llm/InferenceEngine.cc
-    src/platform/FileDialog.cc
-    src/platform/SystemAppearance.cc
-    src/platform/Window.cc
     src/ui/Font.cc
     src/ui/Markdown.cc
     src/ui/Node.cc
@@ -30,8 +26,23 @@ add_executable(lale WIN32
     src/ui/RichText.cc
     src/ui/TextEditing.cc)
 target_include_directories(lale PRIVATE src)
-target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi dwmapi ole32 uuid shell32 llama)
-target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
+target_link_libraries(lale PRIVATE yogacore thorvg llama)
+
+if(WIN32)
+  target_sources(lale PRIVATE
+      src/gfx/d3d11/D3D11Presenter.cc
+      src/platform/win32/Win32FileDialog.cc
+      src/platform/win32/Win32Platform.cc
+      src/platform/win32/Win32SystemAppearance.cc
+      src/platform/win32/Win32Window.cc)
+  target_link_libraries(lale PRIVATE d3d11 dxgi dwmapi ole32 uuid shell32)
+  target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
+  if(MSVC)
+    target_link_options(lale PRIVATE /ENTRY:mainCRTStartup)
+  endif()
+else()
+  message(FATAL_ERROR "Lale has no platform layer for this system yet.")
+endif()
 
 add_custom_command(TARGET lale POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:lale>/fonts

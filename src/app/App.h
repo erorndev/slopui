@@ -1,5 +1,7 @@
-#pragma once
+﻿#pragma once
 
+#include <chrono>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -58,11 +60,11 @@ class App : public WindowHandler {
   App(const App&) = delete;
   App& operator=(const App&) = delete;
 
-  bool Initialize(int show_command);
+  bool Initialize();
   int Run();
 
   void OnResize(int client_width, int client_height) override;
-  void OnDpiChanged(UINT dots_per_inch) override;
+  void OnDpiChanged(int dots_per_inch) override;
   void OnPaint() override;
   void OnMouseMove(float x, float y) override;
   void OnMouseLeave() override;
@@ -70,7 +72,7 @@ class App : public WindowHandler {
   void OnMouseUp(float x, float y) override;
   void OnMouseWheel(float x, float y, float wheel_steps) override;
   void OnText(const std::string& utf8_text) override;
-  void OnKey(UINT virtual_key, bool control_down, bool shift_down) override;
+  void OnKey(Key key, bool control_down, bool shift_down) override;
   void OnCaretTimer() override;
   void OnSystemAppearanceChanged() override;
   CursorKind CursorAt(float x, float y) override;
@@ -201,14 +203,13 @@ class App : public WindowHandler {
   std::vector<ui::TextLine> FocusedFieldLines() const;
   void PlaceCaretAtPoint(float logical_x, float logical_y, bool extend);
   void EditFocusedText(std::string_view replacement, bool is_typing);
-  bool HandleEditingKey(UINT virtual_key, bool control_down, bool shift_down);
+  bool HandleEditingKey(Key key, bool control_down, bool shift_down);
 
   SplashScreen splash_;
   std::chrono::steady_clock::time_point splash_opened_at_;
-  int main_window_show_command_ = SW_SHOWNORMAL;
   bool main_window_shown_ = false;
-  Window window_;
-  Presenter presenter_;
+  std::unique_ptr<Window> window_ = CreatePlatformWindow();
+  std::unique_ptr<Presenter> presenter_ = CreatePlatformPresenter();
   ui::Renderer renderer_;
   theme::Palette palette_;
   std::unique_ptr<ui::Font> caption_font_;

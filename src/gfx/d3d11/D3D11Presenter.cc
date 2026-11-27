@@ -1,8 +1,13 @@
-#include "gfx/Presenter.h"
+﻿#include "gfx/d3d11/D3D11Presenter.h"
 
 namespace lale {
 
-bool Presenter::Initialize(HWND hwnd, int width, int height) {
+std::unique_ptr<Presenter> CreatePlatformPresenter() {
+  return std::make_unique<D3D11Presenter>();
+}
+
+bool D3D11Presenter::Initialize(const Window& window, int width, int height) {
+  HWND hwnd = static_cast<HWND>(window.native_handle());
   DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
   swap_chain_desc.BufferCount = 2;
   swap_chain_desc.BufferDesc.Width = static_cast<UINT>(width);
@@ -30,7 +35,7 @@ bool Presenter::Initialize(HWND hwnd, int width, int height) {
   return CreateUploadTexture(width, height);
 }
 
-bool Presenter::CreateUploadTexture(int width, int height) {
+bool D3D11Presenter::CreateUploadTexture(int width, int height) {
   upload_texture_.Reset();
   D3D11_TEXTURE2D_DESC texture_desc{};
   texture_desc.Width = static_cast<UINT>(width);
@@ -44,7 +49,7 @@ bool Presenter::CreateUploadTexture(int width, int height) {
       device_->CreateTexture2D(&texture_desc, nullptr, &upload_texture_));
 }
 
-bool Presenter::Resize(int width, int height) {
+bool D3D11Presenter::Resize(int width, int height) {
   if (width == buffer_width_ && height == buffer_height_) return true;
   device_context_->ClearState();
   if (FAILED(swap_chain_->ResizeBuffers(0, static_cast<UINT>(width),
@@ -57,7 +62,8 @@ bool Presenter::Resize(int width, int height) {
   return CreateUploadTexture(width, height);
 }
 
-void Presenter::Present(const uint32_t* bgra_pixels, int width, int height) {
+void D3D11Presenter::Present(const uint32_t* bgra_pixels, int width,
+                             int height) {
   if (width != buffer_width_ || height != buffer_height_ || !upload_texture_) {
     return;
   }

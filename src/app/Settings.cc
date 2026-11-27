@@ -1,4 +1,4 @@
-#include "app/Settings.h"
+﻿#include "app/Settings.h"
 
 #include <charconv>
 #include <sstream>
@@ -83,7 +83,7 @@ std::string_view ThemeKey(ThemePreference theme) {
 }
 
 std::filesystem::path SettingsFilePath() {
-  return AppDataFilePath(L"settings.ini");
+  return AppDataFilePath("settings.ini");
 }
 
 StoredSettings LoadStoredSettings(const std::filesystem::path& file_path) {

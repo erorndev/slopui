@@ -1,8 +1,9 @@
-#include "platform/Window.h"
+﻿#include "platform/win32/Win32Window.h"
 
 #include <dwmapi.h>
 #include <windowsx.h>
 
+#include <cstring>
 #include <cwchar>
 
 namespace lale {
@@ -18,12 +19,12 @@ constexpr int kMinimumClientHeight = 480;
 
 }
 
-DWORD Window::window_style() const {
+DWORD Win32Window::window_style() const {
   return kind_ == WindowKind::kSplash ? WS_POPUP : WS_OVERLAPPEDWINDOW;
 }
 
-SIZE Window::OuterSizeForLogicalClient(int logical_width,
-                                       int logical_height) const {
+SIZE Win32Window::OuterSizeForLogicalClient(int logical_width,
+                                            int logical_height) const {
   RECT rect{0, 0,
             MulDiv(logical_width, static_cast<int>(dots_per_inch_),
                    USER_DEFAULT_SCREEN_DPI),
@@ -34,12 +35,12 @@ SIZE Window::OuterSizeForLogicalClient(int logical_width,
   return {rect.right - rect.left, rect.bottom};
 }
 
-int Window::ResizeBorderThickness() const {
+int Win32Window::ResizeBorderThickness() const {
   return GetSystemMetricsForDpi(SM_CYFRAME, dots_per_inch_) +
          GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dots_per_inch_);
 }
 
-LRESULT Window::CalculateClientArea(WPARAM wparam, LPARAM lparam) {
+LRESULT Win32Window::CalculateClientArea(WPARAM wparam, LPARAM lparam) {
   if (!wparam) return DefWindowProcW(hwnd_, WM_NCCALCSIZE, wparam, lparam);
   auto* parameters = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
   const LONG original_top = parameters->rgrc[0].top;
@@ -50,7 +51,7 @@ LRESULT Window::CalculateClientArea(WPARAM wparam, LPARAM lparam) {
   return 0;
 }
 
-LRESULT Window::HitTestFrame(WPARAM wparam, LPARAM lparam) {
+LRESULT Win32Window::HitTestFrame(WPARAM wparam, LPARAM lparam) {
   LRESULT frame_hit = DefWindowProcW(hwnd_, WM_NCHITTEST, wparam, lparam);
   if (frame_hit != HTCLIENT) return frame_hit;
   POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -67,6 +68,64 @@ LRESULT Window::HitTestFrame(WPARAM wparam, LPARAM lparam) {
   return HTCLIENT;
 }
 
+Key KeyFromVirtualKey(WPARAM virtual_key) {
+  switch (virtual_key) {
+    case VK_LEFT:
+      return Key::kLeft;
+    case VK_RIGHT:
+      return Key::kRight;
+    case VK_UP:
+      return Key::kUp;
+    case VK_DOWN:
+      return Key::kDown;
+    case VK_HOME:
+      return Key::kHome;
+    case VK_END:
+      return Key::kEnd;
+    case VK_BACK:
+      return Key::kBackspace;
+    case VK_DELETE:
+      return Key::kDelete;
+    case VK_RETURN:
+      return Key::kEnter;
+    case VK_ESCAPE:
+      return Key::kEscape;
+    case VK_OEM_COMMA:
+      return Key::kComma;
+    case 'A':
+      return Key::kA;
+    case 'C':
+      return Key::kC;
+    case 'N':
+      return Key::kN;
+    case 'V':
+      return Key::kV;
+    case 'X':
+      return Key::kX;
+    case 'Y':
+      return Key::kY;
+    case 'Z':
+      return Key::kZ;
+    default:
+      return Key::kUnknown;
+  }
+}
+
+std::unique_ptr<Window> CreatePlatformWindow() {
+  return std::make_unique<Win32Window>();
+}
+
+std::wstring Utf8ToWide(std::string_view utf8_text) {
+  if (utf8_text.empty()) return {};
+  const int source_length = static_cast<int>(utf8_text.size());
+  const int wide_length = MultiByteToWideChar(CP_UTF8, 0, utf8_text.data(),
+                                              source_length, nullptr, 0);
+  std::wstring wide_text(static_cast<size_t>(wide_length), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8_text.data(), source_length,
+                      wide_text.data(), wide_length);
+  return wide_text;
+}
+
 std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
   if (wide_length <= 0) return {};
   int byte_count = WideCharToMultiByte(CP_UTF8, 0, wide_text, wide_length,
@@ -77,22 +136,24 @@ std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
   return utf8_text;
 }
 
-bool Window::Create(const wchar_t* title, int logical_client_width,
-                    int logical_client_height, WindowHandler* handler,
-                    WindowKind kind) {
+bool Win32Window::Create(std::string_view utf8_title, int logical_client_width,
+                         int logical_client_height, WindowHandler* handler,
+                         WindowKind kind) {
+  const std::wstring title = Utf8ToWide(utf8_title);
   kind_ = kind;
   HINSTANCE instance = GetModuleHandleW(nullptr);
 
   WNDCLASSEXW window_class{sizeof(window_class)};
-  window_class.lpfnWndProc = &Window::WindowProcedure;
+  window_class.lpfnWndProc = &Win32Window::WindowProcedure;
   window_class.hInstance = instance;
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   window_class.lpszClassName = L"LaleWindow";
   RegisterClassExW(&window_class);
 
-  hwnd_ = CreateWindowExW(0, window_class.lpszClassName, title, window_style(),
-                          CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-                          CW_USEDEFAULT, nullptr, nullptr, instance, this);
+  hwnd_ = CreateWindowExW(0, window_class.lpszClassName, title.c_str(),
+                          window_style(), CW_USEDEFAULT, CW_USEDEFAULT,
+                          CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr,
+                          instance, this);
   if (!hwnd_) return false;
 
   dots_per_inch_ = GetDpiForWindow(hwnd_);
@@ -130,44 +191,49 @@ bool Window::Create(const wchar_t* title, int logical_client_width,
   return true;
 }
 
-void Window::Show(int show_command) { ShowWindow(hwnd_, show_command); }
-
-void Window::StartAnimationTimer(UINT interval_milliseconds) {
-  SetTimer(hwnd_, kAnimationTimerId, interval_milliseconds, nullptr);
+void Win32Window::Show() {
+  ShowWindow(hwnd_,
+             kind_ == WindowKind::kMain ? SW_SHOWDEFAULT : SW_SHOWNORMAL);
 }
 
-void Window::BringToFront() { SetForegroundWindow(hwnd_); }
+void Win32Window::StartAnimationTimer(int interval_milliseconds) {
+  SetTimer(hwnd_, kAnimationTimerId, static_cast<UINT>(interval_milliseconds),
+           nullptr);
+}
 
-void Window::OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
-                                 int logical_client_height) {
-  dots_per_inch_ = dots_per_inch;
-  if (handler_) handler_->OnDpiChanged(dots_per_inch_);
+void Win32Window::BringToFront() { SetForegroundWindow(hwnd_); }
+
+void Win32Window::OverrideDotsPerInch(int dots_per_inch,
+                                      int logical_client_width,
+                                      int logical_client_height) {
+  dots_per_inch_ = static_cast<UINT>(dots_per_inch);
+  if (handler_) handler_->OnDpiChanged(dots_per_inch);
   SIZE outer_size =
       OuterSizeForLogicalClient(logical_client_width, logical_client_height);
   SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void Window::Close() { DestroyWindow(hwnd_); }
+void Win32Window::Close() { DestroyWindow(hwnd_); }
 
-void Window::UseDarkTitleBar(bool dark_title_bar) {
+void Win32Window::UseDarkTitleBar(bool dark_title_bar) {
   if (!hwnd_) return;
   BOOL immersive_dark_mode = dark_title_bar ? TRUE : FALSE;
   DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
                         &immersive_dark_mode, sizeof(immersive_dark_mode));
 }
 
-void Window::PostWake() const { PostMessageW(hwnd_, kWakeMessage, 0, 0); }
+void Win32Window::PostWake() const { PostMessageW(hwnd_, kWakeMessage, 0, 0); }
 
-void Window::Minimize() { ShowWindow(hwnd_, SW_MINIMIZE); }
+void Win32Window::Minimize() { ShowWindow(hwnd_, SW_MINIMIZE); }
 
-void Window::ToggleMaximize() {
+void Win32Window::ToggleMaximize() {
   ShowWindow(hwnd_, is_maximized() ? SW_RESTORE : SW_MAXIMIZE);
 }
 
-bool Window::is_maximized() const { return IsZoomed(hwnd_) != FALSE; }
+bool Win32Window::is_maximized() const { return IsZoomed(hwnd_) != FALSE; }
 
-std::string Window::ClipboardText() const {
+std::string Win32Window::ClipboardText() const {
   std::string clipboard_text;
   if (!OpenClipboard(hwnd_)) return clipboard_text;
   if (HANDLE clipboard_data = GetClipboardData(CF_UNICODETEXT)) {
@@ -182,23 +248,18 @@ std::string Window::ClipboardText() const {
   return clipboard_text;
 }
 
-void Window::SetClipboardText(std::string_view utf8_text) const {
+void Win32Window::SetClipboardText(std::string_view utf8_text) const {
   std::string with_carriage_returns;
   with_carriage_returns.reserve(utf8_text.size());
   for (char character : utf8_text) {
     if (character == '\n') with_carriage_returns.push_back('\r');
     if (character != '\r') with_carriage_returns.push_back(character);
   }
-  const int source_length = static_cast<int>(with_carriage_returns.size());
-  const int wide_length = MultiByteToWideChar(
-      CP_UTF8, 0, with_carriage_returns.data(), source_length, nullptr, 0);
-  HGLOBAL memory = GlobalAlloc(
-      GMEM_MOVEABLE, (static_cast<size_t>(wide_length) + 1) * sizeof(wchar_t));
+  const std::wstring wide_source = Utf8ToWide(with_carriage_returns);
+  const size_t byte_count = (wide_source.size() + 1) * sizeof(wchar_t);
+  HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, byte_count);
   if (!memory) return;
-  auto* wide_text = static_cast<wchar_t*>(GlobalLock(memory));
-  MultiByteToWideChar(CP_UTF8, 0, with_carriage_returns.data(), source_length,
-                      wide_text, wide_length);
-  wide_text[wide_length] = L'\0';
+  std::memcpy(GlobalLock(memory), wide_source.c_str(), byte_count);
   GlobalUnlock(memory);
   if (!OpenClipboard(hwnd_)) {
     GlobalFree(memory);
@@ -209,16 +270,16 @@ void Window::SetClipboardText(std::string_view utf8_text) const {
   CloseClipboard();
 }
 
-LRESULT CALLBACK Window::WindowProcedure(HWND hwnd, UINT message, WPARAM wparam,
-                                         LPARAM lparam) {
+LRESULT CALLBACK Win32Window::WindowProcedure(HWND hwnd, UINT message,
+                                              WPARAM wparam, LPARAM lparam) {
   if (message == WM_NCCREATE) {
     auto* create_struct = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    auto* window = static_cast<Window*>(create_struct->lpCreateParams);
+    auto* window = static_cast<Win32Window*>(create_struct->lpCreateParams);
     window->hwnd_ = hwnd;
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(window));
   }
   auto* window =
-      reinterpret_cast<Window*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+      reinterpret_cast<Win32Window*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (window && message == WM_NCCALCSIZE) {
     return window->CalculateClientArea(wparam, lparam);
   }
@@ -228,7 +289,7 @@ LRESULT CALLBACK Window::WindowProcedure(HWND hwnd, UINT message, WPARAM wparam,
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
-LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+LRESULT Win32Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
   switch (message) {
     case WM_GETMINMAXINFO: {
       if (kind_ == WindowKind::kSplash) break;
@@ -240,7 +301,7 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DPICHANGED: {
       dots_per_inch_ = HIWORD(wparam);
-      handler_->OnDpiChanged(dots_per_inch_);
+      handler_->OnDpiChanged(static_cast<int>(dots_per_inch_));
       const auto* suggested_rect = reinterpret_cast<const RECT*>(lparam);
       SetWindowPos(hwnd_, nullptr, suggested_rect->left, suggested_rect->top,
                    suggested_rect->right - suggested_rect->left,
@@ -358,7 +419,7 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_KEYDOWN:
-      handler_->OnKey(static_cast<UINT>(wparam), GetKeyState(VK_CONTROL) < 0,
+      handler_->OnKey(KeyFromVirtualKey(wparam), GetKeyState(VK_CONTROL) < 0,
                       GetKeyState(VK_SHIFT) < 0);
       return 0;
     case WM_TIMER:

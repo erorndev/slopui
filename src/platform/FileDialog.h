@@ -2,16 +2,14 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "platform/Window.h"
 
 namespace lale {
 
-bool InitializeComApartment();
-void ShutdownComApartment();
-
-std::optional<std::string> ShowOpenFileDialog(HWND owner,
-                                              const wchar_t* filter_name,
-                                              const wchar_t* filter_pattern);
+std::optional<std::string> ShowOpenFileDialog(const Window& owner,
+                                              std::string_view filter_name,
+                                              std::string_view file_extension);
 
 }

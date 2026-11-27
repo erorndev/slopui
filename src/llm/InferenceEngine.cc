@@ -1,20 +1,15 @@
 #include "llm/InferenceEngine.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #include <ggml-backend.h>
 #include <llama.h>
-#include <windows.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string_view>
 #include <utility>
+
+#include "platform/Platform.h"
 
 namespace lale::llm {
 
@@ -82,17 +77,6 @@ float SecondsSince(std::chrono::steady_clock::time_point start) {
 
 void DiscardLog(ggml_log_level, const char*, void*) {}
 
-std::string GgmlLibraryDirectory() {
-  HMODULE ggml_module = GetModuleHandleW(L"ggml.dll");
-  if (!ggml_module) return {};
-  char module_path[MAX_PATH] = {};
-  const DWORD length = GetModuleFileNameA(ggml_module, module_path, MAX_PATH);
-  if (length == 0 || length >= MAX_PATH) return {};
-  std::string directory(module_path, length);
-  directory.resize(directory.find_last_of("/\\"));
-  return directory;
-}
-
 bool AbortRequested(void* cancel_flag) {
   return static_cast<std::atomic<bool>*>(cancel_flag)->load();
 }
@@ -145,7 +129,7 @@ InferenceEngine::InferenceEngine(std::function<void()> wake_owner)
 
 void InferenceEngine::LoadBackendsOnWorker() {
   if (backends_loaded_) return;
-  const std::string backend_directory = GgmlLibraryDirectory();
+  const std::string backend_directory = LoadedLibraryDirectory("ggml").string();
   if (backend_directory.empty()) {
     ggml_backend_load_all();
   } else {
@@ -231,7 +215,7 @@ bool InferenceEngine::ReportLoadProgress(float progress, void* engine_pointer) {
 }
 
 void InferenceEngine::RunWorker() {
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  LowerCurrentThreadPriority();
   while (true) {
     Command command;
     {

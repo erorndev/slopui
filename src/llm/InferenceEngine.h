@@ -62,7 +62,7 @@ class InferenceEngine {
   InferenceEngine(const InferenceEngine&) = delete;
   InferenceEngine& operator=(const InferenceEngine&) = delete;
 
-  static bool SupportsGpuOffload();
+  bool SupportsGpuOffload() const { return gpu_offload_supported_; }
 
   void LoadModel(const ModelOptions& options);
   void UnloadModel();
@@ -86,6 +86,7 @@ class InferenceEngine {
   void PublishLoadProgress(float progress);
   static bool ReportLoadProgress(float progress, void* engine);
   void LoadOnWorker(const ModelOptions& options);
+  void LoadBackendsOnWorker();
   void UnloadOnWorker();
   void GenerateOnWorker(const std::vector<PromptMessage>& messages,
                         const SamplingOptions& sampling);
@@ -99,6 +100,8 @@ class InferenceEngine {
   std::vector<EngineEvent> pending_events_;
   std::atomic<bool> cancel_requested_ = false;
   int last_reported_load_percent_ = -1;
+  bool backends_loaded_ = false;
+  std::atomic<bool> gpu_offload_supported_ = true;
   std::vector<int32_t> cached_tokens_;
 
   llama_model* model_ = nullptr;

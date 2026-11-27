@@ -214,6 +214,7 @@ class App : public WindowHandler {
   std::unique_ptr<ui::Font> body_strong_font_;
   std::unique_ptr<ui::Font> headline_font_;
   std::unique_ptr<ui::Font> title_font_;
+  std::unique_ptr<ui::Font> display_font_;
   std::unique_ptr<ui::Font> body_italic_font_;
   std::unique_ptr<ui::Font> body_strong_italic_font_;
   std::unique_ptr<ui::Font> large_heading_font_;

@@ -432,6 +432,8 @@ void App::LoadFonts() {
       std::make_unique<ui::Font>(semibold_font_key, theme::kHeadlinePointSize);
   title_font_ =
       std::make_unique<ui::Font>(semibold_font_key, theme::kTitlePointSize);
+  display_font_ =
+      std::make_unique<ui::Font>(semibold_font_key, theme::kDisplayPointSize);
 }
 
 void App::ApplySystemAppearance() {
@@ -1084,9 +1086,10 @@ void App::BuildMessageList(ui::Node* parent) {
       YGNodeStyleSetFlexShrink(bubble->yoga_node(), 1);
       SetPadding(bubble->yoga_node(), theme::Spacing(4), theme::Spacing(2.5f));
       bubble->style().corner_radius = theme::kRaisedCornerRadius;
-      bubble->style().background = palette_.component_background;
-      bubble->style().border = palette_.border;
+      bubble->style().background = palette_.glass_fill;
+      bubble->style().border = palette_.glass_border;
       bubble->style().border_width = 1;
+      bubble->style().shadows = palette_.shadow_medium;
       MakeSelectable(BuildLabel(bubble, message.text, body_font_.get(),
                                 palette_.text_primary, true),
                      message.text, "\n\n");
@@ -1441,11 +1444,19 @@ void App::BuildEmptyState(ui::Node* parent) {
                         theme::Spacing(6));
   const bool model_loaded = ModelLoaded();
   const bool model_loading = model_state_ == ModelState::kLoading;
-  BuildLabel(empty_state,
-             model_loaded    ? "What would you like to ask?"
-             : model_loading ? "Getting the model ready"
-                             : "Choose a model to begin",
-             title_font_.get(), palette_.text_primary);
+  if (model_loaded) {
+    ui::Node* brand = empty_state->AddChild();
+    MakeRow(brand->yoga_node());
+    YGNodeStyleSetGap(brand->yoga_node(), YGGutterColumn, theme::Spacing(3));
+    BuildIcon(brand, ui::IconKind::kTulip, palette_.high_contrast,
+              theme::kBrandMarkSize);
+    BuildLabel(brand, "Lale", display_font_.get(), palette_.text_primary);
+  } else {
+    BuildLabel(
+        empty_state,
+        model_loading ? "Getting the model ready" : "Choose a model to begin",
+        title_font_.get(), palette_.text_primary);
+  }
   AddVerticalSpace(empty_state, theme::Spacing(3));
   BuildLabel(empty_state, "Lale runs llama.cpp models locally on this PC.",
              body_font_.get(), palette_.text_secondary);
@@ -1740,7 +1751,7 @@ void App::BuildModelSettings(ui::Node* column) {
   ui::Node* runtime_card = BuildSettingsSection(column, "Runtime");
   const int gpu_layers = generation_settings_.gpu_layer_count;
   BuildStepperRow(runtime_card, "GPU layers",
-                  llm::InferenceEngine::SupportsGpuOffload()
+                  inference_engine_->SupportsGpuOffload()
                       ? "Layers offloaded to the graphics card. More is faster "
                         "but uses more video memory."
                       : "This llama.cpp build runs on the CPU only, so this "

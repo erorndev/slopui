@@ -140,6 +140,11 @@ llama_sampler* MakeSampler(const llama_vocab* vocab,
 InferenceEngine::InferenceEngine(std::function<void()> wake_owner)
     : wake_owner_(std::move(wake_owner)) {
   llama_log_set(DiscardLog, nullptr);
+  worker_ = std::thread(&InferenceEngine::RunWorker, this);
+}
+
+void InferenceEngine::LoadBackendsOnWorker() {
+  if (backends_loaded_) return;
   const std::string backend_directory = GgmlLibraryDirectory();
   if (backend_directory.empty()) {
     ggml_backend_load_all();
@@ -147,7 +152,8 @@ InferenceEngine::InferenceEngine(std::function<void()> wake_owner)
     ggml_backend_load_all_from_path(backend_directory.c_str());
   }
   llama_backend_init();
-  worker_ = std::thread(&InferenceEngine::RunWorker, this);
+  gpu_offload_supported_ = llama_supports_gpu_offload();
+  backends_loaded_ = true;
 }
 
 InferenceEngine::~InferenceEngine() {
@@ -159,11 +165,7 @@ InferenceEngine::~InferenceEngine() {
   }
   command_available_.notify_one();
   worker_.join();
-  llama_backend_free();
-}
-
-bool InferenceEngine::SupportsGpuOffload() {
-  return llama_supports_gpu_offload();
+  if (backends_loaded_) llama_backend_free();
 }
 
 void InferenceEngine::LoadModel(const ModelOptions& options) {
@@ -267,6 +269,7 @@ void InferenceEngine::UnloadOnWorker() {
 
 void InferenceEngine::LoadOnWorker(const ModelOptions& options) {
   UnloadOnWorker();
+  LoadBackendsOnWorker();
   cancel_requested_ = false;
   llama_model_params model_parameters = llama_model_default_params();
   model_parameters.n_gpu_layers = options.gpu_layer_count;

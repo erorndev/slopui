@@ -28,6 +28,8 @@ jobs:
             libxrandr-dev \
             libxcursor-dev \
             libxi-dev \
+            libxss-dev \
+            libxtst-dev \
             libdecor-0-dev \
             libegl-dev \
             libgl-dev \

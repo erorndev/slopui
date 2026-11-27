@@ -141,6 +141,10 @@ class App : public WindowHandler {
   ui::Node* BuildKeyHint(ui::Node* parent, std::string keys);
   ui::Node* BuildStatusDot(ui::Node* parent, ui::Color color);
   void BuildProgressBar(ui::Node* parent, float fraction, float height);
+  void BuildProgressBar(ui::Node* parent, float fraction, float height,
+                        ui::Color fill_color);
+  void BuildContextMeter(ui::Node* parent);
+  int ContextTokensInUse() const;
   void BuildRecentModels(ui::Node* column);
   void RememberRecentModel(const std::string& model_path);
   std::string ModelLoadingText() const;

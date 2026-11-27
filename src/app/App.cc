@@ -177,6 +177,17 @@ void ClampScrollViewport(ui::Node* root, std::string_view viewport_id,
   viewport->style().scroll_offset = *scroll_offset;
 }
 
+constexpr float kContextWarningFraction = 0.8f;
+
+std::string FormatWithThousands(int value) {
+  std::string digits = std::to_string(value);
+  for (int position = static_cast<int>(digits.size()) - 3; position > 0;
+       position -= 3) {
+    digits.insert(static_cast<size_t>(position), ",");
+  }
+  return digits;
+}
+
 std::string FileNameFromPath(const std::string& path) {
   size_t separator = path.find_last_of("/\\");
   return separator == std::string::npos ? path : path.substr(separator + 1);
@@ -639,7 +650,48 @@ ui::Node* App::BuildStatusDot(ui::Node* parent, ui::Color color) {
   return dot;
 }
 
+int App::ContextTokensInUse() const {
+  const std::vector<ChatMessage>& messages =
+      conversations_[active_conversation_index_].messages;
+  for (auto message = messages.rbegin(); message != messages.rend();
+       ++message) {
+    if (message->role != MessageRole::kAssistant || message->is_notice) {
+      continue;
+    }
+    const int used =
+        message->prompt_token_count + message->generated_token_count;
+    if (used > 0) return used;
+  }
+  return 0;
+}
+
+void App::BuildContextMeter(ui::Node* parent) {
+  const int used = ContextTokensInUse();
+  const int capacity = requested_model_options_.context_size;
+  if (used <= 0 || capacity <= 0) return;
+  const float fraction =
+      static_cast<float>(used) / static_cast<float>(capacity);
+  const bool nearly_full = fraction >= kContextWarningFraction;
+  ui::Node* meter = parent->AddChild();
+  MakeRow(meter->yoga_node());
+  YGNodeStyleSetGap(meter->yoga_node(), YGGutterColumn, theme::Spacing(2));
+  ui::Node* bar_holder = meter->AddChild();
+  YGNodeStyleSetWidth(bar_holder->yoga_node(), 48);
+  BuildProgressBar(
+      bar_holder, fraction, 4,
+      nearly_full ? palette_.warning_indicator : palette_.text_secondary);
+  BuildLabel(meter,
+             FormatWithThousands(used) + " / " + FormatWithThousands(capacity),
+             monospace_caption_font_.get(),
+             nearly_full ? palette_.warning_text : palette_.text_secondary);
+}
+
 void App::BuildProgressBar(ui::Node* parent, float fraction, float height) {
+  BuildProgressBar(parent, fraction, height, palette_.high_contrast);
+}
+
+void App::BuildProgressBar(ui::Node* parent, float fraction, float height,
+                           ui::Color fill_color) {
   ui::Node* track = parent->AddChild();
   YGNodeStyleSetHeight(track->yoga_node(), height);
   YGNodeStyleSetFlexShrink(track->yoga_node(), 0);
@@ -650,7 +702,7 @@ void App::BuildProgressBar(ui::Node* parent, float fraction, float height) {
   YGNodeStyleSetWidthPercent(fill->yoga_node(),
                              std::clamp(fraction, 0.0f, 1.0f) * 100);
   fill->style().corner_radius = height / 2;
-  fill->style().background = palette_.high_contrast;
+  fill->style().background = fill_color;
 }
 
 void App::BuildNotice(ui::Node* parent, const std::string& text) {
@@ -912,9 +964,16 @@ void App::BuildTopBar(ui::Node* parent) {
     }
   }
 
+  ui::Node* trailing_group = top_bar->AddChild();
+  MakeRow(trailing_group->yoga_node());
+  YGNodeStyleSetFlexShrink(trailing_group->yoga_node(), 0);
+  YGNodeStyleSetGap(trailing_group->yoga_node(), YGGutterColumn,
+                    theme::Spacing(4));
+  BuildContextMeter(trailing_group);
+
   const std::string model_picker_id = "model-picker";
   const bool model_chosen = !generation_settings_.model_path.empty();
-  ui::Node* model_picker = top_bar->AddChild(model_picker_id);
+  ui::Node* model_picker = trailing_group->AddChild(model_picker_id);
   MakeRow(model_picker->yoga_node());
   YGNodeStyleSetHeight(model_picker->yoga_node(), theme::kControlHeight);
   YGNodeStyleSetFlexShrink(model_picker->yoga_node(), 0);

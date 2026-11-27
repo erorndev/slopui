@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lale
+Comment=Native desktop chat UI for llama.cpp
+Exec=lale
+Icon=lale
+Terminal=false
+Categories=Utility;Chat;

@@ -85,3 +85,22 @@ add_custom_command(TARGET lale POST_BUILD
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-Italic.ttf
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-SemiBoldItalic.ttf
         $<TARGET_FILE_DIR:lale>/fonts)
+
+if(UNIX AND NOT APPLE)
+  set_target_properties(lale PROPERTIES
+      BUILD_RPATH_USE_ORIGIN ON
+      INSTALL_RPATH_USE_LINK_PATH ON
+      INSTALL_RPATH "$ORIGIN")
+  include(GNUInstallDirs)
+  install(TARGETS lale RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES
+      vendor/inter/Inter-Regular.ttf
+      vendor/inter/Inter-SemiBold.ttf
+      vendor/inter/Inter-Italic.ttf
+      vendor/inter/Inter-SemiBoldItalic.ttf
+      DESTINATION ${CMAKE_INSTALL_BINDIR}/fonts)
+  install(FILES assets/linux/lale.desktop
+      DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES assets/linux/lale.svg
+      DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+endif()

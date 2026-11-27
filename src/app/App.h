@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "app/Conversation.h"
 #include "app/Settings.h"
 #include "app/Theme.h"
 #include "gfx/Presenter.h"
@@ -19,21 +20,7 @@
 
 namespace lale {
 
-enum class MessageRole { kUser, kAssistant };
-
-struct ChatMessage {
-  MessageRole role = MessageRole::kUser;
-  std::string text;
-  bool is_notice = false;
-  bool is_streaming = false;
-};
-
 enum class ModelState { kNone, kLoading, kLoaded, kFailed };
-
-struct Conversation {
-  std::string title;
-  std::vector<ChatMessage> messages;
-};
 
 enum class ButtonStyle { kPrimary, kSecondary, kLink };
 
@@ -153,6 +140,7 @@ class App : public WindowHandler {
   void ChooseModelFile();
   void SetThemePreference(ThemePreference preference);
   void SaveSettingsIfChanged();
+  void SaveConversationHistory();
   llm::ModelOptions CurrentModelOptions() const;
   void RequestModelLoad();
   void HandleEngineEvent(const llm::EngineEvent& event);
@@ -197,6 +185,7 @@ class App : public WindowHandler {
   GenerationSettings generation_settings_;
   std::string composer_text_;
   std::filesystem::path settings_file_path_;
+  std::filesystem::path conversations_file_path_;
   StoredSettings saved_settings_;
   bool settings_page_open_ = false;
   SettingsSection settings_section_ = SettingsSection::kModel;

@@ -1,19 +1,11 @@
 #include "app/Settings.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <shlobj.h>
-#include <windows.h>
-
 #include <charconv>
-#include <fstream>
 #include <sstream>
 #include <string_view>
 #include <system_error>
+
+#include "app/DataFile.h"
 
 namespace lale {
 
@@ -22,35 +14,6 @@ namespace {
 constexpr std::string_view kThemeSystem = "system";
 constexpr std::string_view kThemeLight = "light";
 constexpr std::string_view kThemeDark = "dark";
-
-std::string EscapeValue(std::string_view value) {
-  std::string escaped;
-  escaped.reserve(value.size());
-  for (char character : value) {
-    if (character == '\\') {
-      escaped += "\\\\";
-    } else if (character == '\n') {
-      escaped += "\\n";
-    } else if (character != '\r') {
-      escaped.push_back(character);
-    }
-  }
-  return escaped;
-}
-
-std::string UnescapeValue(std::string_view value) {
-  std::string unescaped;
-  unescaped.reserve(value.size());
-  for (size_t index = 0; index < value.size(); ++index) {
-    if (value[index] == '\\' && index + 1 < value.size()) {
-      ++index;
-      unescaped.push_back(value[index] == 'n' ? '\n' : value[index]);
-    } else {
-      unescaped.push_back(value[index]);
-    }
-  }
-  return unescaped;
-}
 
 std::string FormatFloat(float value) {
   char buffer[32];
@@ -72,7 +35,7 @@ void ApplyEntry(std::string_view key, std::string_view value,
                 StoredSettings* settings) {
   GenerationSettings& generation = settings->generation;
   if (key == "model_path") {
-    generation.model_path = UnescapeValue(value);
+    generation.model_path = UnescapeLineValue(value);
   } else if (key == "temperature") {
     ParseNumber(value, &generation.temperature);
   } else if (key == "top_p") {
@@ -92,7 +55,7 @@ void ApplyEntry(std::string_view key, std::string_view value,
   } else if (key == "stream_tokens") {
     generation.stream_tokens = value == "true";
   } else if (key == "system_prompt") {
-    generation.system_prompt = UnescapeValue(value);
+    generation.system_prompt = UnescapeLineValue(value);
   } else if (key == "theme") {
     if (value == kThemeSystem) settings->theme = ThemePreference::kSystem;
     if (value == kThemeLight) settings->theme = ThemePreference::kLight;
@@ -115,39 +78,22 @@ std::string_view ThemeKey(ThemePreference theme) {
 }
 
 std::filesystem::path SettingsFilePath() {
-  PWSTR roaming_folder = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT,
-                                  nullptr, &roaming_folder))) {
-    return {};
-  }
-  std::filesystem::path file_path =
-      std::filesystem::path(roaming_folder) / L"Lale" / L"settings.ini";
-  CoTaskMemFree(roaming_folder);
-  return file_path;
+  return AppDataFilePath(L"settings.ini");
 }
 
 StoredSettings LoadStoredSettings(const std::filesystem::path& file_path) {
   StoredSettings settings;
-  if (file_path.empty()) return settings;
-  std::ifstream file(file_path, std::ios::binary);
-  if (!file) return settings;
-  std::string line;
-  while (std::getline(file, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    size_t separator = line.find('=');
-    if (separator == std::string::npos) continue;
-    ApplyEntry(std::string_view(line).substr(0, separator),
-               std::string_view(line).substr(separator + 1), &settings);
+  for (const KeyValueLine& entry : ReadKeyValueLines(file_path)) {
+    ApplyEntry(entry.first, entry.second, &settings);
   }
   return settings;
 }
 
 bool SaveStoredSettings(const StoredSettings& settings,
                         const std::filesystem::path& file_path) {
-  if (file_path.empty()) return false;
   const GenerationSettings& generation = settings.generation;
   std::ostringstream contents;
-  contents << "model_path=" << EscapeValue(generation.model_path) << '\n'
+  contents << "model_path=" << EscapeLineValue(generation.model_path) << '\n'
            << "temperature=" << FormatFloat(generation.temperature) << '\n'
            << "top_p=" << FormatFloat(generation.top_p) << '\n'
            << "top_k=" << generation.top_k << '\n'
@@ -159,21 +105,10 @@ bool SaveStoredSettings(const StoredSettings& settings,
            << "thread_count=" << generation.thread_count << '\n'
            << "stream_tokens=" << (generation.stream_tokens ? "true" : "false")
            << '\n'
-           << "system_prompt=" << EscapeValue(generation.system_prompt) << '\n'
+           << "system_prompt=" << EscapeLineValue(generation.system_prompt)
+           << '\n'
            << "theme=" << ThemeKey(settings.theme) << '\n';
-
-  std::error_code error;
-  std::filesystem::create_directories(file_path.parent_path(), error);
-  std::filesystem::path temporary_path = file_path;
-  temporary_path += L".tmp";
-  {
-    std::ofstream file(temporary_path, std::ios::binary | std::ios::trunc);
-    if (!file) return false;
-    file << contents.str();
-    if (!file) return false;
-  }
-  std::filesystem::rename(temporary_path, file_path, error);
-  return !error;
+  return WriteFileAtomically(file_path, contents.str());
 }
 
 }

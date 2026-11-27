@@ -178,14 +178,26 @@ std::string FileNameFromPath(const std::string& path) {
 
 }
 
-App::App() : settings_file_path_(SettingsFilePath()) {
+App::App()
+    : settings_file_path_(SettingsFilePath()),
+      conversations_file_path_(ConversationsFilePath()) {
   conversations_.push_back({std::string(kNewConversationTitle), {}});
+  for (Conversation& stored : LoadConversations(conversations_file_path_)) {
+    conversations_.push_back(std::move(stored));
+  }
   saved_settings_ = LoadStoredSettings(settings_file_path_);
   generation_settings_ = saved_settings_.generation;
   theme_preference_ = saved_settings_.theme;
 }
 
-App::~App() { SaveSettingsIfChanged(); }
+App::~App() {
+  SaveSettingsIfChanged();
+  SaveConversationHistory();
+}
+
+void App::SaveConversationHistory() {
+  SaveConversations(conversations_, conversations_file_path_);
+}
 
 void App::SaveSettingsIfChanged() {
   StoredSettings current{generation_settings_, theme_preference_};
@@ -305,6 +317,7 @@ void App::HandleEngineEvent(const llm::EngineEvent& event) {
   } else {
     reply.text = TrimWhitespace(reply.text);
   }
+  SaveConversationHistory();
 }
 
 int App::Run() {
@@ -1683,6 +1696,7 @@ void App::SendComposerMessage() {
   composer_selection_ = {};
   composer_history_.Clear();
   message_scroll_pinned_to_bottom_ = true;
+  SaveConversationHistory();
   if (!ModelLoaded()) {
     conversation.messages.push_back(
         {MessageRole::kAssistant,

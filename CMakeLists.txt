@@ -13,6 +13,8 @@ find_package(llama CONFIG REQUIRED)
 add_executable(lale WIN32
     src/Main.cc
     src/app/App.cc
+    src/app/Conversation.cc
+    src/app/DataFile.cc
     src/app/Settings.cc
     src/app/Theme.cc
     src/gfx/Presenter.cc

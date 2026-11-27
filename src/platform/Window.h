@@ -17,6 +17,8 @@ enum class CursorKind { kArrow, kHand, kIBeam };
 
 enum class WindowRegion { kClient, kCaption };
 
+enum class WindowKind { kMain, kSplash };
+
 class WindowHandler {
  public:
   virtual ~WindowHandler() = default;
@@ -36,13 +38,17 @@ class WindowHandler {
   virtual WindowRegion RegionAt(float x, float y) = 0;
   virtual void OnActivationChanged(bool active) = 0;
   virtual void OnWake() = 0;
+  virtual void OnAnimationFrame() {}
 };
 
 class Window {
  public:
   bool Create(const wchar_t* title, int logical_client_width,
-              int logical_client_height, WindowHandler* handler);
+              int logical_client_height, WindowHandler* handler,
+              WindowKind kind = WindowKind::kMain);
   void Show(int show_command);
+  void StartAnimationTimer(UINT interval_milliseconds);
+  void BringToFront();
   void OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
                            int logical_client_height);
   void Close();
@@ -67,7 +73,10 @@ class Window {
   LRESULT CalculateClientArea(WPARAM wparam, LPARAM lparam);
   LRESULT HitTestFrame(WPARAM wparam, LPARAM lparam);
 
+  DWORD window_style() const;
+
   HWND hwnd_ = nullptr;
+  WindowKind kind_ = WindowKind::kMain;
   UINT dots_per_inch_ = USER_DEFAULT_SCREEN_DPI;
   WindowHandler* handler_ = nullptr;
   int client_width_ = 0;

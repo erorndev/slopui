@@ -16,6 +16,7 @@ add_executable(lale WIN32
     src/app/Conversation.cc
     src/app/DataFile.cc
     src/app/Settings.cc
+    src/app/SplashScreen.cc
     src/app/Theme.cc
     src/gfx/Presenter.cc
     src/llm/InferenceEngine.cc

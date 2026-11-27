@@ -10,12 +10,16 @@ namespace lale {
 namespace {
 
 constexpr UINT_PTR kCaretTimerId = 1;
+constexpr UINT_PTR kAnimationTimerId = 2;
 constexpr UINT kWakeMessage = WM_APP + 1;
 constexpr UINT kCaretBlinkMilliseconds = 530;
 constexpr int kMinimumClientWidth = 720;
 constexpr int kMinimumClientHeight = 480;
-constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 
+}
+
+DWORD Window::window_style() const {
+  return kind_ == WindowKind::kSplash ? WS_POPUP : WS_OVERLAPPEDWINDOW;
 }
 
 SIZE Window::OuterSizeForLogicalClient(int logical_width,
@@ -25,7 +29,8 @@ SIZE Window::OuterSizeForLogicalClient(int logical_width,
                    USER_DEFAULT_SCREEN_DPI),
             MulDiv(logical_height, static_cast<int>(dots_per_inch_),
                    USER_DEFAULT_SCREEN_DPI)};
-  AdjustWindowRectExForDpi(&rect, kWindowStyle, FALSE, 0, dots_per_inch_);
+  if (kind_ == WindowKind::kSplash) return {rect.right, rect.bottom};
+  AdjustWindowRectExForDpi(&rect, window_style(), FALSE, 0, dots_per_inch_);
   return {rect.right - rect.left, rect.bottom};
 }
 
@@ -50,7 +55,10 @@ LRESULT Window::HitTestFrame(WPARAM wparam, LPARAM lparam) {
   if (frame_hit != HTCLIENT) return frame_hit;
   POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
   ScreenToClient(hwnd_, &cursor);
-  if (!is_maximized() && cursor.y < ResizeBorderThickness()) return HTTOP;
+  if (kind_ == WindowKind::kMain && !is_maximized() &&
+      cursor.y < ResizeBorderThickness()) {
+    return HTTOP;
+  }
   if (handler_->RegionAt(static_cast<float>(cursor.x),
                          static_cast<float>(cursor.y)) ==
       WindowRegion::kCaption) {
@@ -70,7 +78,9 @@ std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
 }
 
 bool Window::Create(const wchar_t* title, int logical_client_width,
-                    int logical_client_height, WindowHandler* handler) {
+                    int logical_client_height, WindowHandler* handler,
+                    WindowKind kind) {
+  kind_ = kind;
   HINSTANCE instance = GetModuleHandleW(nullptr);
 
   WNDCLASSEXW window_class{sizeof(window_class)};
@@ -80,7 +90,7 @@ bool Window::Create(const wchar_t* title, int logical_client_width,
   window_class.lpszClassName = L"LaleWindow";
   RegisterClassExW(&window_class);
 
-  hwnd_ = CreateWindowExW(0, window_class.lpszClassName, title, kWindowStyle,
+  hwnd_ = CreateWindowExW(0, window_class.lpszClassName, title, window_style(),
                           CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                           CW_USEDEFAULT, nullptr, nullptr, instance, this);
   if (!hwnd_) return false;
@@ -88,19 +98,45 @@ bool Window::Create(const wchar_t* title, int logical_client_width,
   dots_per_inch_ = GetDpiForWindow(hwnd_);
   SIZE outer_size =
       OuterSizeForLogicalClient(logical_client_width, logical_client_height);
-  SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
-               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  if (kind_ == WindowKind::kSplash) {
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    MONITORINFO monitor_info{sizeof(monitor_info)};
+    GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY),
+                    &monitor_info);
+    const RECT& work_area = monitor_info.rcWork;
+    SetWindowPos(
+        hwnd_, nullptr,
+        work_area.left + (work_area.right - work_area.left - outer_size.cx) / 2,
+        work_area.top + (work_area.bottom - work_area.top - outer_size.cy) / 2,
+        outer_size.cx, outer_size.cy,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    DWM_WINDOW_CORNER_PREFERENCE corner_preference = DWMWCP_ROUND;
+    DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corner_preference, sizeof(corner_preference));
+  } else {
+    SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  }
 
   RECT client_rect{};
   GetClientRect(hwnd_, &client_rect);
   client_width_ = client_rect.right;
   client_height_ = client_rect.bottom;
   handler_ = handler;
-  SetTimer(hwnd_, kCaretTimerId, kCaretBlinkMilliseconds, nullptr);
+  if (kind_ == WindowKind::kMain) {
+    SetTimer(hwnd_, kCaretTimerId, kCaretBlinkMilliseconds, nullptr);
+  }
   return true;
 }
 
 void Window::Show(int show_command) { ShowWindow(hwnd_, show_command); }
+
+void Window::StartAnimationTimer(UINT interval_milliseconds) {
+  SetTimer(hwnd_, kAnimationTimerId, interval_milliseconds, nullptr);
+}
+
+void Window::BringToFront() { SetForegroundWindow(hwnd_); }
 
 void Window::OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
                                  int logical_client_height) {
@@ -115,6 +151,7 @@ void Window::OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
 void Window::Close() { DestroyWindow(hwnd_); }
 
 void Window::UseDarkTitleBar(bool dark_title_bar) {
+  if (!hwnd_) return;
   BOOL immersive_dark_mode = dark_title_bar ? TRUE : FALSE;
   DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
                         &immersive_dark_mode, sizeof(immersive_dark_mode));
@@ -194,6 +231,7 @@ LRESULT CALLBACK Window::WindowProcedure(HWND hwnd, UINT message, WPARAM wparam,
 LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
   switch (message) {
     case WM_GETMINMAXINFO: {
+      if (kind_ == WindowKind::kSplash) break;
       auto* min_max_info = reinterpret_cast<MINMAXINFO*>(lparam);
       SIZE minimum_size =
           OuterSizeForLogicalClient(kMinimumClientWidth, kMinimumClientHeight);
@@ -325,10 +363,19 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       return 0;
     case WM_TIMER:
       if (wparam == kCaretTimerId) handler_->OnCaretTimer();
+      if (wparam == kAnimationTimerId) handler_->OnAnimationFrame();
       return 0;
+    case WM_CLOSE:
+      if (kind_ == WindowKind::kSplash) {
+        PostQuitMessage(0);
+        return 0;
+      }
+      break;
     case WM_DESTROY:
       KillTimer(hwnd_, kCaretTimerId);
-      PostQuitMessage(0);
+      KillTimer(hwnd_, kAnimationTimerId);
+      handler_ = nullptr;
+      if (kind_ == WindowKind::kMain) PostQuitMessage(0);
       return 0;
   }
   return DefWindowProcW(hwnd_, message, wparam, lparam);

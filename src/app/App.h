@@ -8,6 +8,7 @@
 
 #include "app/Conversation.h"
 #include "app/Settings.h"
+#include "app/SplashScreen.h"
 #include "app/Theme.h"
 #include "gfx/Presenter.h"
 #include "llm/InferenceEngine.h"
@@ -79,6 +80,8 @@ class App : public WindowHandler {
 
  private:
   void LoadFonts();
+  void ShowMainWindow();
+  void AdvanceStartup();
   void ApplySystemAppearance();
   void RenderFrame();
   float LogicalClientWidth() const;
@@ -200,6 +203,10 @@ class App : public WindowHandler {
   void EditFocusedText(std::string_view replacement, bool is_typing);
   bool HandleEditingKey(UINT virtual_key, bool control_down, bool shift_down);
 
+  SplashScreen splash_;
+  std::chrono::steady_clock::time_point splash_opened_at_;
+  int main_window_show_command_ = SW_SHOWNORMAL;
+  bool main_window_shown_ = false;
   Window window_;
   Presenter presenter_;
   ui::Renderer renderer_;

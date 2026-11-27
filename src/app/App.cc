@@ -178,6 +178,8 @@ void ClampScrollViewport(ui::Node* root, std::string_view viewport_id,
 }
 
 constexpr float kContextWarningFraction = 0.8f;
+constexpr float kSplashMinimumSeconds = 1.2f;
+constexpr float kSplashMaximumSeconds = 6.0f;
 
 std::string FormatWithThousands(int value) {
   std::string digits = std::to_string(value);
@@ -228,6 +230,10 @@ void App::SaveSettingsIfChanged() {
 
 bool App::Initialize(int show_command) {
   LoadFonts();
+  ApplySystemAppearance();
+  main_window_show_command_ = show_command;
+  splash_opened_at_ = std::chrono::steady_clock::now();
+  splash_.Open(palette_, {title_font_.get(), caption_font_.get()});
   if (!window_.Create(L"Lale", kInitialLogicalWidth, kInitialLogicalHeight,
                       this)) {
     return false;
@@ -246,9 +252,35 @@ bool App::Initialize(int show_command) {
       std::make_unique<llm::InferenceEngine>([this] { window_.PostWake(); });
   RequestModelLoad();
   focused_field_id_ = std::string(kComposerFieldId);
-  RenderFrame();
-  window_.Show(show_command);
+  if (!splash_.is_open()) ShowMainWindow();
   return true;
+}
+
+void App::ShowMainWindow() {
+  if (main_window_shown_) return;
+  main_window_shown_ = true;
+  RenderFrame();
+  window_.Show(main_window_show_command_);
+  window_.BringToFront();
+  splash_.Close();
+}
+
+void App::AdvanceStartup() {
+  if (main_window_shown_) return;
+  const float seconds_open =
+      std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                   splash_opened_at_)
+          .count();
+  const bool model_settled = model_state_ != ModelState::kLoading;
+  if (model_state_ == ModelState::kLoading) {
+    splash_.SetStatus(ModelLoadingText(), model_load_progress_);
+  } else {
+    splash_.SetStatus("Starting…", -1);
+  }
+  if ((model_settled && seconds_open >= kSplashMinimumSeconds) ||
+      seconds_open >= kSplashMaximumSeconds) {
+    ShowMainWindow();
+  }
 }
 
 llm::ModelOptions App::CurrentModelOptions() const {
@@ -380,7 +412,8 @@ int App::Run() {
       TranslateMessage(&message);
       DispatchMessageW(&message);
     }
-    if (needs_render_) {
+    AdvanceStartup();
+    if (needs_render_ && main_window_shown_) {
       RenderFrame();
     } else {
       WaitMessage();

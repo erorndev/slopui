@@ -125,6 +125,28 @@ void DrawShadows(const NodeStyle& style, const Rect& bounds,
   }
 }
 
+void DrawGradient(const NodeStyle& style, const Rect& bounds,
+                  tvg::Scene* target_scene) {
+  std::vector<tvg::Fill::ColorStop> color_stops;
+  color_stops.reserve(style.background_gradient.size());
+  for (const GradientStop& stop : style.background_gradient) {
+    color_stops.push_back({stop.offset, stop.color.red, stop.color.green,
+                           stop.color.blue, stop.color.alpha});
+  }
+  const float period =
+      style.gradient_period > 0 ? style.gradient_period : bounds.width;
+  const float start_x =
+      bounds.x + std::fmod(style.gradient_offset, period) - period;
+  tvg::LinearGradient* gradient = tvg::LinearGradient::gen();
+  gradient->linear(start_x, bounds.y, start_x + period, bounds.y);
+  gradient->colorStops(color_stops.data(),
+                       static_cast<uint32_t>(color_stops.size()));
+  gradient->spread(tvg::FillSpread::Repeat);
+  tvg::Shape* shape = MakeRoundedRect(bounds, style.corner_radius);
+  shape->fill(gradient);
+  target_scene->add(shape);
+}
+
 void DrawOuterRing(const NodeStyle& style, const Rect& bounds,
                    tvg::Scene* target_scene) {
   const float half_width = style.outer_ring_width / 2;
@@ -530,6 +552,9 @@ void Renderer::DrawNodeContents(const Node& node, tvg::Scene* target_scene,
     background->fill(style.background.red, style.background.green,
                      style.background.blue, style.background.alpha);
     target_scene->add(background);
+  }
+  if (!style.background_gradient.empty()) {
+    DrawGradient(style, bounds, target_scene);
   }
   if (IsVisible(style.border) && style.border_width > 0) {
     float inset = style.border_width / 2;

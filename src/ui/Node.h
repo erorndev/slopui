@@ -48,9 +48,17 @@ struct Shadow {
   Color color;
 };
 
+struct GradientStop {
+  float offset = 0;
+  Color color;
+};
+
 struct NodeStyle {
   std::vector<Shadow> shadows;
   Color background;
+  std::vector<GradientStop> background_gradient;
+  float gradient_period = 0;
+  float gradient_offset = 0;
   float corner_radius = 0;
   Color border;
   float border_width = 0;

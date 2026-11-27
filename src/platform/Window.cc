@@ -10,6 +10,7 @@ namespace lale {
 namespace {
 
 constexpr UINT_PTR kCaretTimerId = 1;
+constexpr UINT kWakeMessage = WM_APP + 1;
 constexpr UINT kCaretBlinkMilliseconds = 530;
 constexpr int kMinimumClientWidth = 720;
 constexpr int kMinimumClientHeight = 480;
@@ -25,7 +26,37 @@ SIZE Window::OuterSizeForLogicalClient(int logical_width,
             MulDiv(logical_height, static_cast<int>(dots_per_inch_),
                    USER_DEFAULT_SCREEN_DPI)};
   AdjustWindowRectExForDpi(&rect, kWindowStyle, FALSE, 0, dots_per_inch_);
-  return {rect.right - rect.left, rect.bottom - rect.top};
+  return {rect.right - rect.left, rect.bottom};
+}
+
+int Window::ResizeBorderThickness() const {
+  return GetSystemMetricsForDpi(SM_CYFRAME, dots_per_inch_) +
+         GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dots_per_inch_);
+}
+
+LRESULT Window::CalculateClientArea(WPARAM wparam, LPARAM lparam) {
+  if (!wparam) return DefWindowProcW(hwnd_, WM_NCCALCSIZE, wparam, lparam);
+  auto* parameters = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+  const LONG original_top = parameters->rgrc[0].top;
+  LRESULT result = DefWindowProcW(hwnd_, WM_NCCALCSIZE, wparam, lparam);
+  if (result != 0) return result;
+  parameters->rgrc[0].top = original_top;
+  if (is_maximized()) parameters->rgrc[0].top += ResizeBorderThickness();
+  return 0;
+}
+
+LRESULT Window::HitTestFrame(WPARAM wparam, LPARAM lparam) {
+  LRESULT frame_hit = DefWindowProcW(hwnd_, WM_NCHITTEST, wparam, lparam);
+  if (frame_hit != HTCLIENT) return frame_hit;
+  POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ScreenToClient(hwnd_, &cursor);
+  if (!is_maximized() && cursor.y < ResizeBorderThickness()) return HTTOP;
+  if (handler_->RegionAt(static_cast<float>(cursor.x),
+                         static_cast<float>(cursor.y)) ==
+      WindowRegion::kCaption) {
+    return HTCAPTION;
+  }
+  return HTCLIENT;
 }
 
 std::string WideToUtf8(const wchar_t* wide_text, int wide_length) {
@@ -58,7 +89,7 @@ bool Window::Create(const wchar_t* title, int logical_client_width,
   SIZE outer_size =
       OuterSizeForLogicalClient(logical_client_width, logical_client_height);
   SetWindowPos(hwnd_, nullptr, 0, 0, outer_size.cx, outer_size.cy,
-               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
   RECT client_rect{};
   GetClientRect(hwnd_, &client_rect);
@@ -89,12 +120,15 @@ void Window::UseDarkTitleBar(bool dark_title_bar) {
                         &immersive_dark_mode, sizeof(immersive_dark_mode));
 }
 
-void Window::SetTitleBarColors(COLORREF caption_color, COLORREF text_color) {
-  DwmSetWindowAttribute(hwnd_, DWMWA_CAPTION_COLOR, &caption_color,
-                        sizeof(caption_color));
-  DwmSetWindowAttribute(hwnd_, DWMWA_TEXT_COLOR, &text_color,
-                        sizeof(text_color));
+void Window::PostWake() const { PostMessageW(hwnd_, kWakeMessage, 0, 0); }
+
+void Window::Minimize() { ShowWindow(hwnd_, SW_MINIMIZE); }
+
+void Window::ToggleMaximize() {
+  ShowWindow(hwnd_, is_maximized() ? SW_RESTORE : SW_MAXIMIZE);
 }
+
+bool Window::is_maximized() const { return IsZoomed(hwnd_) != FALSE; }
 
 std::string Window::ClipboardText() const {
   std::string clipboard_text;
@@ -121,6 +155,9 @@ LRESULT CALLBACK Window::WindowProcedure(HWND hwnd, UINT message, WPARAM wparam,
   }
   auto* window =
       reinterpret_cast<Window*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (window && message == WM_NCCALCSIZE) {
+    return window->CalculateClientArea(wparam, lparam);
+  }
   if (window && window->handler_) {
     return window->HandleMessage(message, wparam, lparam);
   }
@@ -166,6 +203,14 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_ERASEBKGND:
       return 1;
+    case WM_NCHITTEST:
+      return HitTestFrame(wparam, lparam);
+    case kWakeMessage:
+      handler_->OnWake();
+      return 0;
+    case WM_ACTIVATE:
+      handler_->OnActivationChanged(LOWORD(wparam) != WA_INACTIVE);
+      break;
     case WM_MOUSEMOVE:
       if (!tracking_mouse_leave_) {
         TRACKMOUSEEVENT track_event{sizeof(track_event), TME_LEAVE, hwnd_, 0};

@@ -36,8 +36,14 @@ enum class IconKind {
   kPlus,
   kClose,
   kArrowUp,
+  kArrowLeft,
+  kStop,
   kChevronDown,
-  kTulip
+  kTulip,
+  kWindowMinimize,
+  kWindowMaximize,
+  kWindowRestore,
+  kWindowClose
 };
 
 struct Shadow {

@@ -5,8 +5,10 @@
 #include <string_view>
 #include <vector>
 
+#include "app/Settings.h"
 #include "app/Theme.h"
 #include "gfx/Presenter.h"
+#include "llm/InferenceEngine.h"
 #include "platform/Window.h"
 #include "ui/Font.h"
 #include "ui/Node.h"
@@ -20,25 +22,24 @@ struct ChatMessage {
   MessageRole role = MessageRole::kUser;
   std::string text;
   bool is_notice = false;
+  bool is_streaming = false;
 };
+
+enum class ModelState { kNone, kLoading, kLoaded, kFailed };
 
 struct Conversation {
   std::string title;
   std::vector<ChatMessage> messages;
 };
 
-struct GenerationSettings {
-  std::string model_path;
-  float temperature = 0.8f;
-  float top_p = 0.95f;
-  int top_k = 40;
-  int maximum_tokens = 512;
-  int context_size = 4096;
-  bool stream_tokens = true;
-  std::string system_prompt = "You are a helpful assistant.";
-};
-
 enum class ButtonStyle { kPrimary, kSecondary, kLink };
+
+enum class SettingsSection { kModel, kSampling, kAppearance, kShortcuts };
+
+struct SegmentOption {
+  std::string key;
+  std::string label;
+};
 
 class App : public WindowHandler {
  public:
@@ -63,6 +64,9 @@ class App : public WindowHandler {
   void OnCaretTimer() override;
   void OnSystemAppearanceChanged() override;
   CursorKind CursorAt(float x, float y) override;
+  WindowRegion RegionAt(float x, float y) override;
+  void OnWake() override;
+  void OnActivationChanged(bool active) override;
 
  private:
   void LoadFonts();
@@ -75,6 +79,8 @@ class App : public WindowHandler {
   void ResetCaretBlink();
 
   std::unique_ptr<ui::Node> BuildInterface();
+  void BuildTitleBar(ui::Node* parent);
+  void BuildCaptionButton(ui::Node* parent, std::string id, ui::IconKind icon);
   void BuildSidebar(ui::Node* parent);
   ui::Node* BuildSidebarRow(ui::Node* parent, std::string id, std::string label,
                             ui::IconKind leading_icon, bool selected,
@@ -84,12 +90,28 @@ class App : public WindowHandler {
   void BuildMessageList(ui::Node* parent);
   void BuildEmptyState(ui::Node* parent);
   void BuildComposer(ui::Node* parent);
-  void BuildSettingsPanel(ui::Node* parent);
+  void BuildSettingsNavigation(ui::Node* parent);
+  void BuildSettingsPage(ui::Node* parent);
+  void BuildSettingsPageHeading(ui::Node* column, std::string title,
+                                std::string description);
+  void BuildModelSettings(ui::Node* column);
+  void BuildSamplingSettings(ui::Node* column);
+  void BuildAppearanceSettings(ui::Node* column);
+  void BuildShortcutSettings(ui::Node* column);
+  void BuildShortcutRow(ui::Node* card, std::string_view action,
+                        std::string keys);
+  void BuildSegmentedControl(ui::Node* parent, std::string_view id_prefix,
+                             const std::vector<SegmentOption>& options,
+                             std::string_view selected_key);
   ui::Node* BuildSettingsSection(ui::Node* parent, std::string caption);
+  ui::Node* BuildSettingsRow(ui::Node* card, std::string_view label,
+                             std::string_view description);
   void BuildSettingsRowSeparator(ui::Node* card);
   void BuildStepperRow(ui::Node* card, std::string_view label,
+                       std::string_view description,
                        std::string_view setting_key, std::string value_text);
   void BuildToggleRow(ui::Node* card, std::string_view label,
+                      std::string_view description,
                       std::string_view setting_key, bool enabled);
   ui::Node* BuildIconButton(ui::Node* parent, std::string id, ui::IconKind icon,
                             float size);
@@ -107,6 +129,16 @@ class App : public WindowHandler {
   void LayoutInterface(ui::Node* root);
 
   void HandleClick(const std::string& node_id);
+  void OpenSettings(SettingsSection section);
+  void CloseSettings();
+  void ChooseModelFile();
+  void SetThemePreference(ThemePreference preference);
+  void SaveSettingsIfChanged();
+  llm::ModelOptions CurrentModelOptions() const;
+  void RequestModelLoad();
+  void HandleEngineEvent(const llm::EngineEvent& event);
+  bool ModelLoaded() const;
+  void StopGeneration();
   void StepSetting(std::string_view setting_key, int direction);
   bool SettingsMatchDefaults() const;
   void ResetSettingsToDefaults();
@@ -130,16 +162,28 @@ class App : public WindowHandler {
   std::unique_ptr<ui::Font> headline_font_;
   std::unique_ptr<ui::Font> title_font_;
   std::unique_ptr<ui::Node> interface_root_;
+  std::unique_ptr<llm::InferenceEngine> inference_engine_;
 
   std::vector<Conversation> conversations_;
   size_t active_conversation_index_ = 0;
   GenerationSettings generation_settings_;
   std::string composer_text_;
-  bool settings_panel_open_ = false;
+  std::filesystem::path settings_file_path_;
+  StoredSettings saved_settings_;
+  bool settings_page_open_ = false;
+  SettingsSection settings_section_ = SettingsSection::kModel;
+  ThemePreference theme_preference_ = ThemePreference::kSystem;
+  ModelState model_state_ = ModelState::kNone;
+  std::string model_error_;
+  llm::ModelOptions requested_model_options_;
+  int pending_model_request_count_ = 0;
+  bool generating_ = false;
+  size_t generating_conversation_index_ = 0;
   std::string focused_field_id_;
   std::string hovered_node_id_;
   std::string pressed_node_id_;
   bool caret_visible_ = true;
+  bool window_active_ = true;
   float message_scroll_offset_ = 0;
   bool message_scroll_pinned_to_bottom_ = true;
   float settings_scroll_offset_ = 0;

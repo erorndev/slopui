@@ -3,6 +3,7 @@
 #include <thorvg.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace lale::ui {
@@ -96,11 +97,71 @@ void DrawTulip(const NodeStyle& style, const Rect& bounds,
   target_scene->add(stem);
 }
 
+void DrawCaptionGlyph(const NodeStyle& style, const Rect& bounds,
+                      tvg::Scene* target_scene) {
+  constexpr float kGlyphHalfExtent = 5.0f;
+  constexpr float kGlyphStrokeWidth = 1.0f;
+  constexpr float kRestoreOffset = 2.0f;
+  const float center_x = std::round(bounds.x + bounds.width / 2) + 0.5f;
+  const float center_y = std::round(bounds.y + bounds.height / 2) + 0.5f;
+  const float left = center_x - kGlyphHalfExtent;
+  const float top = center_y - kGlyphHalfExtent;
+  const float extent = 2 * kGlyphHalfExtent;
+  tvg::Shape* glyph = tvg::Shape::gen();
+  switch (style.icon) {
+    case IconKind::kWindowMinimize:
+      glyph->moveTo(left, center_y);
+      glyph->lineTo(left + extent, center_y);
+      break;
+    case IconKind::kWindowMaximize:
+      glyph->appendRect(left, top, extent, extent, 1, 1);
+      break;
+    case IconKind::kWindowRestore:
+      glyph->appendRect(left, top + kRestoreOffset, extent - kRestoreOffset,
+                        extent - kRestoreOffset, 1, 1);
+      glyph->moveTo(left + kRestoreOffset, top);
+      glyph->lineTo(left + extent, top);
+      glyph->lineTo(left + extent, top + extent - kRestoreOffset);
+      break;
+    default:
+      glyph->moveTo(left, top);
+      glyph->lineTo(left + extent, top + extent);
+      glyph->moveTo(left + extent, top);
+      glyph->lineTo(left, top + extent);
+      break;
+  }
+  glyph->strokeWidth(kGlyphStrokeWidth);
+  glyph->strokeFill(style.icon_color.red, style.icon_color.green,
+                    style.icon_color.blue, style.icon_color.alpha);
+  target_scene->add(glyph);
+}
+
 void DrawIcon(const NodeStyle& style, const Rect& bounds,
               tvg::Scene* target_scene) {
-  if (style.icon == IconKind::kTulip) {
-    DrawTulip(style, bounds, target_scene);
-    return;
+  switch (style.icon) {
+    case IconKind::kTulip:
+      DrawTulip(style, bounds, target_scene);
+      return;
+    case IconKind::kStop: {
+      constexpr float kStopHalfExtent = 4.5f;
+      tvg::Shape* square =
+          MakeRoundedRect({bounds.x + bounds.width / 2 - kStopHalfExtent,
+                           bounds.y + bounds.height / 2 - kStopHalfExtent,
+                           2 * kStopHalfExtent, 2 * kStopHalfExtent},
+                          1.5f);
+      square->fill(style.icon_color.red, style.icon_color.green,
+                   style.icon_color.blue, style.icon_color.alpha);
+      target_scene->add(square);
+      return;
+    }
+    case IconKind::kWindowMinimize:
+    case IconKind::kWindowMaximize:
+    case IconKind::kWindowRestore:
+    case IconKind::kWindowClose:
+      DrawCaptionGlyph(style, bounds, target_scene);
+      return;
+    default:
+      break;
   }
   constexpr float kIconHalfExtent = 5.0f;
   constexpr float kIconStrokeWidth = 1.5f;
@@ -131,13 +192,19 @@ void DrawIcon(const NodeStyle& style, const Rect& bounds,
       icon->lineTo(center_x, center_y - kIconHalfExtent - 1);
       icon->lineTo(center_x + kIconHalfExtent, center_y - 1);
       break;
+    case IconKind::kArrowLeft:
+      icon->moveTo(center_x + kIconHalfExtent + 1, center_y);
+      icon->lineTo(center_x - kIconHalfExtent - 1, center_y);
+      icon->moveTo(center_x - 1, center_y - kIconHalfExtent);
+      icon->lineTo(center_x - kIconHalfExtent - 1, center_y);
+      icon->lineTo(center_x - 1, center_y + kIconHalfExtent);
+      break;
     case IconKind::kChevronDown:
       icon->moveTo(center_x - kIconHalfExtent + 1, center_y - 2);
       icon->lineTo(center_x, center_y + 2.5f);
       icon->lineTo(center_x + kIconHalfExtent - 1, center_y - 2);
       break;
-    case IconKind::kNone:
-    case IconKind::kTulip:
+    default:
       tvg::Paint::rel(icon);
       return;
   }

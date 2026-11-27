@@ -49,6 +49,9 @@ Palette MakeDarkPalette() {
   palette.warning_border = Opaque(0x573300);
   palette.warning_text = Opaque(0xF2A20D);
   palette.warning_indicator = Opaque(0xFFB224);
+  palette.close_button_hover = Opaque(0xE5484D);
+  palette.close_button_pressed = Opaque(0xC93C41);
+  palette.text_on_close_button = Opaque(0xFFFFFF);
   palette.success_indicator = Opaque(0x45A557);
   palette.toggle_off = Opaque(0x454545);
   palette.toggle_knob = Opaque(0xFFFFFF);
@@ -88,6 +91,9 @@ Palette MakeLightPalette() {
   palette.warning_border = Opaque(0xFFDD8F);
   palette.warning_text = Opaque(0xA35200);
   palette.warning_indicator = Opaque(0xFFB224);
+  palette.close_button_hover = Opaque(0xE5484D);
+  palette.close_button_pressed = Opaque(0xC93C41);
+  palette.text_on_close_button = Opaque(0xFFFFFF);
   palette.success_indicator = Opaque(0x45A557);
   palette.toggle_off = Opaque(0xC9C9C9);
   palette.toggle_knob = Opaque(0xFFFFFF);

@@ -14,6 +14,8 @@ namespace lale {
 
 enum class CursorKind { kArrow, kHand, kIBeam };
 
+enum class WindowRegion { kClient, kCaption };
+
 class WindowHandler {
  public:
   virtual ~WindowHandler() = default;
@@ -30,6 +32,9 @@ class WindowHandler {
   virtual void OnKey(UINT virtual_key, bool control_down, bool shift_down) = 0;
   virtual void OnCaretTimer() = 0;
   virtual CursorKind CursorAt(float x, float y) = 0;
+  virtual WindowRegion RegionAt(float x, float y) = 0;
+  virtual void OnActivationChanged(bool active) = 0;
+  virtual void OnWake() = 0;
 };
 
 class Window {
@@ -41,7 +46,10 @@ class Window {
                            int logical_client_height);
   void Close();
   void UseDarkTitleBar(bool dark_title_bar);
-  void SetTitleBarColors(COLORREF caption_color, COLORREF text_color);
+  void PostWake() const;
+  void Minimize();
+  void ToggleMaximize();
+  bool is_maximized() const;
   HWND hwnd() const { return hwnd_; }
   int client_width() const { return client_width_; }
   int client_height() const { return client_height_; }
@@ -53,6 +61,9 @@ class Window {
                                           WPARAM wparam, LPARAM lparam);
   LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
   SIZE OuterSizeForLogicalClient(int logical_width, int logical_height) const;
+  int ResizeBorderThickness() const;
+  LRESULT CalculateClientArea(WPARAM wparam, LPARAM lparam);
+  LRESULT HitTestFrame(WPARAM wparam, LPARAM lparam);
 
   HWND hwnd_ = nullptr;
   UINT dots_per_inch_ = USER_DEFAULT_SCREEN_DPI;

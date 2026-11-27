@@ -20,3 +20,6 @@ compile_commands.json
 *.exe
 *.lib
 *.exp
+
+# Claude Code project notes
+CLAUDE.md

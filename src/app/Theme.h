@@ -41,6 +41,9 @@ struct Palette {
   ui::Color warning_border;
   ui::Color warning_text;
   ui::Color warning_indicator;
+  ui::Color close_button_hover;
+  ui::Color close_button_pressed;
+  ui::Color text_on_close_button;
   ui::Color success_indicator;
 
   ui::Color toggle_off;
@@ -59,9 +62,11 @@ inline constexpr float kSpacingUnit = 4;
 constexpr float Spacing(float units) { return kSpacingUnit * units; }
 
 inline constexpr float kSidebarWidth = 264;
-inline constexpr float kSettingsPanelWidth = 340;
-inline constexpr float kMinimumChatWidth = 420;
+inline constexpr float kSettingsNavigationWidth = 232;
+inline constexpr float kSettingsColumnMaximumWidth = 680;
 inline constexpr float kTopBarHeight = 56;
+inline constexpr float kTitleBarHeight = 40;
+inline constexpr float kCaptionButtonWidth = 46;
 inline constexpr float kListRowHeight = 32;
 inline constexpr float kSettingsRowHeight = 48;
 inline constexpr float kControlHeight = 32;

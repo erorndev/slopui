@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <thread>
 
+#include "platform/FileDialog.h"
 #include "platform/SystemAppearance.h"
 
 namespace lale {
@@ -20,10 +22,18 @@ constexpr std::string_view kSettingsViewportId = "settings-viewport";
 constexpr std::string_view kConversationIdPrefix = "conversation:";
 constexpr std::string_view kStepperIdPrefix = "stepper:";
 constexpr std::string_view kToggleIdPrefix = "toggle:";
+constexpr std::string_view kMinimizeButtonId = "window:minimize";
+constexpr std::string_view kMaximizeButtonId = "window:maximize";
+constexpr std::string_view kCloseButtonId = "window:close";
+constexpr std::string_view kSettingsSectionIdPrefix = "settings-section:";
+constexpr std::string_view kThemeIdPrefix = "theme:";
 constexpr std::string_view kNewConversationTitle = "New chat";
 constexpr std::string_view kNoModelNotice =
-    "No model is loaded, so there is no reply yet. Choose a GGUF model in "
-    "Settings once the llama.cpp backend is connected.";
+    "No model is loaded, so there is no reply. Choose a GGUF model in "
+    "Settings.";
+constexpr std::string_view kLoadingNotice =
+    "The model is still loading, so there is no reply. Send your message "
+    "again in a moment.";
 
 constexpr int kInitialLogicalWidth = 1280;
 constexpr int kInitialLogicalHeight = 800;
@@ -175,11 +185,22 @@ std::string FileNameFromPath(const std::string& path) {
 
 }
 
-App::App() {
+App::App() : settings_file_path_(SettingsFilePath()) {
   conversations_.push_back({std::string(kNewConversationTitle), {}});
+  saved_settings_ = LoadStoredSettings(settings_file_path_);
+  generation_settings_ = saved_settings_.generation;
+  theme_preference_ = saved_settings_.theme;
 }
 
-App::~App() = default;
+App::~App() { SaveSettingsIfChanged(); }
+
+void App::SaveSettingsIfChanged() {
+  StoredSettings current{generation_settings_, theme_preference_};
+  if (current == saved_settings_) return;
+  if (SaveStoredSettings(current, settings_file_path_)) {
+    saved_settings_ = std::move(current);
+  }
+}
 
 bool App::Initialize(int show_command) {
   LoadFonts();
@@ -197,10 +218,100 @@ bool App::Initialize(int show_command) {
     window_.OverrideDotsPerInch(override_dots_per_inch, kInitialLogicalWidth,
                                 kInitialLogicalHeight);
   }
+  inference_engine_ =
+      std::make_unique<llm::InferenceEngine>([this] { window_.PostWake(); });
+  RequestModelLoad();
   focused_field_id_ = std::string(kComposerFieldId);
   RenderFrame();
   window_.Show(show_command);
   return true;
+}
+
+llm::ModelOptions App::CurrentModelOptions() const {
+  const GenerationSettings& settings = generation_settings_;
+  llm::ModelOptions options;
+  options.model_path = settings.model_path;
+  options.gpu_layer_count =
+      settings.gpu_layer_count >= GenerationSettings::kAllGpuLayers
+          ? -1
+          : settings.gpu_layer_count;
+  options.thread_count = settings.thread_count;
+  options.context_size = settings.context_size;
+  return options;
+}
+
+bool App::ModelLoaded() const { return model_state_ == ModelState::kLoaded; }
+
+void App::RequestModelLoad() {
+  llm::ModelOptions options = CurrentModelOptions();
+  const bool unchanged = options == requested_model_options_ &&
+                         model_state_ != ModelState::kFailed;
+  if (unchanged) return;
+  StopGeneration();
+  requested_model_options_ = options;
+  ++pending_model_request_count_;
+  model_error_.clear();
+  if (options.model_path.empty()) {
+    model_state_ = ModelState::kNone;
+    inference_engine_->UnloadModel();
+  } else {
+    model_state_ = ModelState::kLoading;
+    inference_engine_->LoadModel(options);
+  }
+  Invalidate();
+}
+
+void App::StopGeneration() {
+  if (generating_) inference_engine_->CancelGeneration();
+}
+
+void App::OnWake() {
+  for (const llm::EngineEvent& event : inference_engine_->TakeEvents()) {
+    HandleEngineEvent(event);
+  }
+  Invalidate();
+}
+
+void App::HandleEngineEvent(const llm::EngineEvent& event) {
+  using llm::EngineEventKind;
+  switch (event.kind) {
+    case EngineEventKind::kModelLoaded:
+    case EngineEventKind::kModelLoadFailed:
+    case EngineEventKind::kModelUnloaded:
+      if (--pending_model_request_count_ > 0) return;
+      if (event.kind == EngineEventKind::kModelLoaded) {
+        model_state_ = ModelState::kLoaded;
+      } else if (event.kind == EngineEventKind::kModelLoadFailed) {
+        model_state_ = ModelState::kFailed;
+        model_error_ = event.text;
+      }
+      return;
+    case EngineEventKind::kTokenText:
+    case EngineEventKind::kGenerationFinished:
+    case EngineEventKind::kGenerationFailed:
+      break;
+  }
+  if (!generating_ || generating_conversation_index_ >= conversations_.size()) {
+    return;
+  }
+  std::vector<ChatMessage>& messages =
+      conversations_[generating_conversation_index_].messages;
+  if (messages.empty() || !messages.back().is_streaming) return;
+  ChatMessage& reply = messages.back();
+  if (event.kind == EngineEventKind::kTokenText) {
+    reply.text += event.text;
+    return;
+  }
+  generating_ = false;
+  reply.is_streaming = false;
+  if (event.kind == EngineEventKind::kGenerationFailed) {
+    reply.is_notice = true;
+    reply.text = event.text;
+  } else if (TrimWhitespace(reply.text).empty()) {
+    messages.pop_back();
+  } else {
+    reply.text = TrimWhitespace(reply.text);
+  }
 }
 
 int App::Run() {
@@ -252,13 +363,11 @@ void App::LoadFonts() {
 void App::ApplySystemAppearance() {
   SystemAppearance appearance = ReadSystemAppearance();
   ApplyThemeOverrideFromEnvironment(&appearance);
+  if (theme_preference_ != ThemePreference::kSystem) {
+    appearance.prefers_dark_mode = theme_preference_ == ThemePreference::kDark;
+  }
   palette_ = theme::MakePalette(appearance);
   window_.UseDarkTitleBar(palette_.is_dark);
-  const ui::Color& caption = palette_.background_secondary;
-  const ui::Color& caption_text = palette_.text_secondary;
-  window_.SetTitleBarColors(
-      RGB(caption.red, caption.green, caption.blue),
-      RGB(caption_text.red, caption_text.green, caption_text.blue));
   Invalidate();
 }
 
@@ -316,22 +425,78 @@ ui::Color App::InteractiveFill(std::string_view node_id, ui::Color resting,
 
 std::unique_ptr<ui::Node> App::BuildInterface() {
   auto root = std::make_unique<ui::Node>();
-  YGNodeStyleSetFlexDirection(root->yoga_node(), YGFlexDirectionRow);
   root->style().background = palette_.background_primary;
-  const bool sidebar_fits_beside_settings =
-      LogicalClientWidth() >= theme::kSidebarWidth +
-                                  theme::kSettingsPanelWidth +
-                                  theme::kMinimumChatWidth;
-  if (!settings_panel_open_ || sidebar_fits_beside_settings) {
-    BuildSidebar(root.get());
-    AddVerticalRule(root.get(), palette_.border);
-  }
-  BuildChatArea(root.get());
-  if (settings_panel_open_) {
-    AddVerticalRule(root.get(), palette_.border);
-    BuildSettingsPanel(root.get());
+  BuildTitleBar(root.get());
+
+  ui::Node* body = root->AddChild();
+  YGNodeStyleSetFlexDirection(body->yoga_node(), YGFlexDirectionRow);
+  YGNodeStyleSetFlexGrow(body->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(body->yoga_node(), 1);
+  YGNodeStyleSetMinHeight(body->yoga_node(), 0);
+  if (settings_page_open_) {
+    BuildSettingsNavigation(body);
+    AddVerticalRule(body, palette_.border);
+    BuildSettingsPage(body);
+  } else {
+    BuildSidebar(body);
+    AddVerticalRule(body, palette_.border);
+    BuildChatArea(body);
   }
   return root;
+}
+
+void App::BuildTitleBar(ui::Node* parent) {
+  ui::Node* title_bar = parent->AddChild();
+  MakeRow(title_bar->yoga_node());
+  YGNodeStyleSetHeight(title_bar->yoga_node(), theme::kTitleBarHeight);
+  YGNodeStyleSetFlexShrink(title_bar->yoga_node(), 0);
+  YGNodeStyleSetAlignItems(title_bar->yoga_node(), YGAlignStretch);
+  title_bar->style().background = palette_.background_secondary;
+
+  ui::Node* brand = title_bar->AddChild();
+  MakeRow(brand->yoga_node());
+  YGNodeStyleSetFlexGrow(brand->yoga_node(), 1);
+  YGNodeStyleSetGap(brand->yoga_node(), YGGutterColumn, theme::Spacing(2));
+  YGNodeStyleSetPadding(brand->yoga_node(), YGEdgeLeft, theme::Spacing(4));
+  const ui::Color brand_color =
+      window_active_ ? palette_.text_primary : palette_.text_tertiary;
+  BuildIcon(brand, ui::IconKind::kTulip,
+            window_active_ ? palette_.high_contrast : palette_.text_tertiary,
+            18);
+  BuildLabel(brand, "Lale", label_strong_font_.get(), brand_color);
+
+  BuildCaptionButton(title_bar, std::string(kMinimizeButtonId),
+                     ui::IconKind::kWindowMinimize);
+  BuildCaptionButton(title_bar, std::string(kMaximizeButtonId),
+                     window_.is_maximized() ? ui::IconKind::kWindowRestore
+                                            : ui::IconKind::kWindowMaximize);
+  BuildCaptionButton(title_bar, std::string(kCloseButtonId),
+                     ui::IconKind::kWindowClose);
+  AddHorizontalRule(parent, palette_.border);
+}
+
+void App::BuildCaptionButton(ui::Node* parent, std::string id,
+                             ui::IconKind icon) {
+  const bool is_close = id == kCloseButtonId;
+  const bool hovered = hovered_node_id_ == id;
+  ui::Node* button = parent->AddChild(id);
+  YGNodeStyleSetWidth(button->yoga_node(), theme::kCaptionButtonWidth);
+  YGNodeStyleSetFlexShrink(button->yoga_node(), 0);
+  button->style().background =
+      is_close
+          ? InteractiveFill(id, theme::kTransparent,
+                            palette_.close_button_hover,
+                            palette_.close_button_pressed)
+          : InteractiveFill(id, theme::kTransparent, palette_.overlay_hover,
+                            palette_.overlay_pressed);
+  button->style().icon = icon;
+  if (is_close && hovered) {
+    button->style().icon_color = palette_.text_on_close_button;
+  } else {
+    button->style().icon_color = window_active_ || hovered
+                                     ? palette_.text_primary
+                                     : palette_.text_tertiary;
+  }
 }
 
 ui::Node* App::BuildLabel(ui::Node* parent, std::string text,
@@ -504,20 +669,9 @@ void App::BuildSidebar(ui::Node* parent) {
   YGNodeRef sidebar_layout = sidebar->yoga_node();
   YGNodeStyleSetWidth(sidebar_layout, theme::kSidebarWidth - 1);
   YGNodeStyleSetFlexShrink(sidebar_layout, 0);
-  YGNodeStyleSetPadding(sidebar_layout, YGEdgeHorizontal, theme::Spacing(3));
-  YGNodeStyleSetPadding(sidebar_layout, YGEdgeBottom, theme::Spacing(3));
+  YGNodeStyleSetPadding(sidebar_layout, YGEdgeAll, theme::Spacing(3));
   YGNodeStyleSetGap(sidebar_layout, YGGutterRow, theme::Spacing(0.5f));
   sidebar->style().background = palette_.background_secondary;
-
-  ui::Node* brand = sidebar->AddChild();
-  MakeRow(brand->yoga_node());
-  YGNodeStyleSetHeight(brand->yoga_node(), theme::kTopBarHeight);
-  YGNodeStyleSetFlexShrink(brand->yoga_node(), 0);
-  YGNodeStyleSetGap(brand->yoga_node(), YGGutterColumn, theme::Spacing(2));
-  YGNodeStyleSetPadding(brand->yoga_node(), YGEdgeHorizontal,
-                        theme::Spacing(2));
-  BuildIcon(brand, ui::IconKind::kTulip, palette_.high_contrast, 22);
-  BuildLabel(brand, "Lale", headline_font_.get(), palette_.text_primary);
 
   const std::string new_chat_id = "new-chat";
   ui::Node* new_chat = sidebar->AddChild(new_chat_id);
@@ -566,7 +720,7 @@ void App::BuildSidebar(ui::Node* parent) {
   AddHorizontalRule(sidebar, palette_.border);
   AddVerticalSpace(sidebar, theme::Spacing(2));
   BuildSidebarRow(sidebar, "settings-toggle", "Settings", ui::IconKind::kNone,
-                  settings_panel_open_, "Ctrl ,");
+                  false, "Ctrl ,");
 }
 
 void App::BuildChatArea(ui::Node* parent) {
@@ -597,7 +751,7 @@ void App::BuildTopBar(ui::Node* parent) {
   title->style().elides_text = true;
 
   const std::string model_picker_id = "model-picker";
-  const bool model_loaded = !generation_settings_.model_path.empty();
+  const bool model_chosen = !generation_settings_.model_path.empty();
   ui::Node* model_picker = top_bar->AddChild(model_picker_id);
   MakeRow(model_picker->yoga_node());
   YGNodeStyleSetHeight(model_picker->yoga_node(), theme::kControlHeight);
@@ -618,12 +772,15 @@ void App::BuildTopBar(ui::Node* parent) {
                                      : palette_.border;
   model_picker->style().border_width = 1;
   model_picker->style().shadows = palette_.shadow_small;
-  BuildStatusDot(model_picker, model_loaded ? palette_.success_indicator
-                                            : palette_.warning_indicator);
-  BuildLabel(model_picker,
-             model_loaded ? FileNameFromPath(generation_settings_.model_path)
-                          : "No model",
-             label_strong_font_.get(), palette_.text_primary);
+  BuildStatusDot(model_picker, ModelLoaded() ? palette_.success_indicator
+                                             : palette_.warning_indicator);
+  ui::Node* model_name = BuildLabel(
+      model_picker,
+      model_chosen ? FileNameFromPath(generation_settings_.model_path)
+                   : "No model",
+      label_strong_font_.get(), palette_.text_primary);
+  YGNodeStyleSetMaxWidth(model_name->yoga_node(), 240);
+  model_name->style().elides_text = true;
   BuildIcon(model_picker, ui::IconKind::kChevronDown, palette_.text_secondary,
             12);
 }
@@ -670,6 +827,9 @@ void App::BuildMessageList(ui::Node* parent) {
                  true);
     } else if (message.is_notice) {
       BuildNotice(column, message.text);
+    } else if (message.is_streaming &&
+               (message.text.empty() || !generation_settings_.stream_tokens)) {
+      BuildLabel(column, "Writing…", body_font_.get(), palette_.text_tertiary);
     } else {
       BuildLabel(column, message.text, body_font_.get(), palette_.text_primary,
                  true);
@@ -682,7 +842,7 @@ void App::BuildEmptyState(ui::Node* parent) {
   YGNodeStyleSetAlignItems(empty_state->yoga_node(), YGAlignCenter);
   YGNodeStyleSetPadding(empty_state->yoga_node(), YGEdgeHorizontal,
                         theme::Spacing(6));
-  const bool model_loaded = !generation_settings_.model_path.empty();
+  const bool model_loaded = ModelLoaded();
   BuildLabel(
       empty_state,
       model_loaded ? "What would you like to ask?" : "Choose a model to begin",
@@ -761,8 +921,9 @@ void App::BuildComposer(ui::Node* parent) {
   BuildKeyHint(hints, "Shift Enter");
   BuildLabel(hints, "new line", caption_font_.get(), palette_.text_tertiary);
 
-  const bool can_send = !TrimWhitespace(composer_text_).empty();
-  const std::string send_id = can_send ? "send" : std::string();
+  const bool can_send = generating_ || !TrimWhitespace(composer_text_).empty();
+  const std::string send_id =
+      generating_ ? "stop" : (can_send ? "send" : std::string());
   ui::Node* send_button = toolbar->AddChild(send_id);
   YGNodeStyleSetWidth(send_button->yoga_node(), 32);
   YGNodeStyleSetHeight(send_button->yoga_node(), 32);
@@ -775,17 +936,18 @@ void App::BuildComposer(ui::Node* parent) {
                                  palette_.high_contrast_hover,
                                  palette_.high_contrast_hover)
                : palette_.component_background;
-  send_button->style().icon = ui::IconKind::kArrowUp;
+  send_button->style().icon =
+      generating_ ? ui::IconKind::kStop : ui::IconKind::kArrowUp;
   send_button->style().icon_color =
       can_send ? palette_.text_on_high_contrast : palette_.text_tertiary;
 }
 
 ui::Node* App::BuildSettingsSection(ui::Node* parent, std::string caption) {
   ui::Node* caption_box = parent->AddChild();
-  YGNodeStyleSetMargin(caption_box->yoga_node(), YGEdgeTop, theme::Spacing(6));
+  YGNodeStyleSetMargin(caption_box->yoga_node(), YGEdgeTop, theme::Spacing(8));
   YGNodeStyleSetMargin(caption_box->yoga_node(), YGEdgeBottom,
-                       theme::Spacing(2));
-  BuildLabel(caption_box, std::move(caption), label_strong_font_.get(),
+                       theme::Spacing(3));
+  BuildLabel(caption_box, std::move(caption), body_strong_font_.get(),
              palette_.text_primary);
 
   ui::Node* card = parent->AddChild();
@@ -801,75 +963,224 @@ void App::BuildSettingsRowSeparator(ui::Node* card) {
   AddHorizontalRule(card, palette_.border);
 }
 
-void App::BuildSettingsPanel(ui::Node* parent) {
-  ui::Node* panel = parent->AddChild();
-  YGNodeStyleSetWidth(panel->yoga_node(), theme::kSettingsPanelWidth - 1);
-  YGNodeStyleSetFlexShrink(panel->yoga_node(), 0);
-  panel->style().background = palette_.background_secondary;
+ui::Node* App::BuildSettingsRow(ui::Node* card, std::string_view label,
+                                std::string_view description) {
+  ui::Node* row = card->AddChild();
+  MakeRow(row->yoga_node());
+  YGNodeStyleSetMinHeight(row->yoga_node(), theme::kSettingsRowHeight + 8);
+  YGNodeStyleSetGap(row->yoga_node(), YGGutterColumn, theme::Spacing(6));
+  SetPadding(row->yoga_node(), theme::Spacing(4), theme::Spacing(3));
+  ui::Node* text = row->AddChild();
+  YGNodeStyleSetFlexGrow(text->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(text->yoga_node(), 1);
+  YGNodeStyleSetGap(text->yoga_node(), YGGutterRow, theme::Spacing(0.5f));
+  BuildLabel(text, std::string(label), label_strong_font_.get(),
+             palette_.text_primary, true);
+  if (!description.empty()) {
+    BuildLabel(text, std::string(description), caption_font_.get(),
+               palette_.text_secondary, true);
+  }
+  return row;
+}
 
-  ui::Node* header = panel->AddChild();
-  MakeRow(header->yoga_node());
-  YGNodeStyleSetHeight(header->yoga_node(), theme::kTopBarHeight - 1);
-  YGNodeStyleSetFlexShrink(header->yoga_node(), 0);
-  YGNodeStyleSetJustifyContent(header->yoga_node(), YGJustifySpaceBetween);
-  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeLeft, theme::Spacing(5));
-  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeRight, theme::Spacing(3));
-  BuildLabel(header, "Settings", body_strong_font_.get(),
-             palette_.text_primary);
-  BuildIconButton(header, "settings-close", ui::IconKind::kClose, 28);
-  AddHorizontalRule(panel, palette_.border);
+void App::BuildSettingsNavigation(ui::Node* parent) {
+  ui::Node* navigation = parent->AddChild();
+  YGNodeRef navigation_layout = navigation->yoga_node();
+  YGNodeStyleSetWidth(navigation_layout, theme::kSettingsNavigationWidth - 1);
+  YGNodeStyleSetFlexShrink(navigation_layout, 0);
+  YGNodeStyleSetPadding(navigation_layout, YGEdgeAll, theme::Spacing(3));
+  YGNodeStyleSetGap(navigation_layout, YGGutterRow, theme::Spacing(0.5f));
+  navigation->style().background = palette_.background_secondary;
 
-  ui::Node* viewport = panel->AddChild(std::string(kSettingsViewportId));
+  BuildSidebarRow(navigation, "settings-back", "Back to chat",
+                  ui::IconKind::kArrowLeft, false, "Esc");
+
+  ui::Node* section_caption = navigation->AddChild();
+  YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeTop,
+                       theme::Spacing(5));
+  YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeBottom,
+                       theme::Spacing(1));
+  YGNodeStyleSetPadding(section_caption->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(2.5f));
+  BuildLabel(section_caption, "Settings", caption_font_.get(),
+             palette_.text_tertiary);
+
+  struct NavigationEntry {
+    SettingsSection section;
+    const char* key;
+    const char* label;
+  };
+  constexpr NavigationEntry kEntries[] = {
+      {SettingsSection::kModel, "model", "Model"},
+      {SettingsSection::kSampling, "sampling", "Sampling"},
+      {SettingsSection::kAppearance, "appearance", "Appearance"},
+      {SettingsSection::kShortcuts, "shortcuts", "Keyboard shortcuts"},
+  };
+  for (const NavigationEntry& entry : kEntries) {
+    BuildSidebarRow(navigation,
+                    std::string(kSettingsSectionIdPrefix) + entry.key,
+                    entry.label, ui::IconKind::kNone,
+                    settings_section_ == entry.section, {});
+  }
+}
+
+void App::BuildSettingsPage(ui::Node* parent) {
+  ui::Node* page = parent->AddChild();
+  YGNodeStyleSetFlexGrow(page->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(page->yoga_node(), 1);
+  YGNodeStyleSetMinWidth(page->yoga_node(), 0);
+
+  ui::Node* viewport = page->AddChild(std::string(kSettingsViewportId));
   MakeScrollViewport(viewport, settings_scroll_offset_);
   ui::Node* content = viewport->AddChild();
   YGNodeStyleSetFlexShrink(content->yoga_node(), 0);
-  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeHorizontal,
-                        theme::Spacing(5));
-  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeBottom, theme::Spacing(6));
+  YGNodeStyleSetAlignItems(content->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeTop, theme::Spacing(10));
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeBottom, theme::Spacing(12));
 
-  const bool model_loaded = !generation_settings_.model_path.empty();
-  ui::Node* model_card = BuildSettingsSection(content, "Model");
-  ui::Node* model_row = model_card->AddChild();
-  YGNodeStyleSetFlexDirection(model_row->yoga_node(), YGFlexDirectionRow);
-  YGNodeStyleSetAlignItems(model_row->yoga_node(), YGAlignFlexStart);
-  YGNodeStyleSetGap(model_row->yoga_node(), YGGutterColumn, theme::Spacing(3));
-  SetPadding(model_row->yoga_node(), theme::Spacing(4), theme::Spacing(3.5f));
-  ui::Node* model_dot =
-      BuildStatusDot(model_row, model_loaded ? palette_.success_indicator
-                                             : palette_.warning_indicator);
-  YGNodeStyleSetMargin(model_dot->yoga_node(), YGEdgeTop, 7);
-  ui::Node* model_text = model_row->AddChild();
-  YGNodeStyleSetFlexGrow(model_text->yoga_node(), 1);
-  YGNodeStyleSetFlexShrink(model_text->yoga_node(), 1);
-  YGNodeStyleSetGap(model_text->yoga_node(), YGGutterRow, theme::Spacing(1));
-  BuildLabel(model_text,
-             model_loaded ? FileNameFromPath(generation_settings_.model_path)
-                          : "No model loaded",
-             body_strong_font_.get(), palette_.text_primary, true);
-  BuildLabel(model_text, "Model loading arrives with the llama.cpp backend.",
-             label_font_.get(), palette_.text_secondary, true);
+  ui::Node* column = content->AddChild();
+  YGNodeStyleSetWidthPercent(column->yoga_node(), 100);
+  YGNodeStyleSetMaxWidth(column->yoga_node(),
+                         theme::kSettingsColumnMaximumWidth);
+  YGNodeStyleSetPadding(column->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(8));
+  switch (settings_section_) {
+    case SettingsSection::kModel:
+      BuildModelSettings(column);
+      break;
+    case SettingsSection::kSampling:
+      BuildSamplingSettings(column);
+      break;
+    case SettingsSection::kAppearance:
+      BuildAppearanceSettings(column);
+      break;
+    case SettingsSection::kShortcuts:
+      BuildShortcutSettings(column);
+      break;
+  }
+}
 
-  ui::Node* sampling_card = BuildSettingsSection(content, "Sampling");
-  BuildStepperRow(sampling_card, "Temperature", "temperature",
+void App::BuildSettingsPageHeading(ui::Node* column, std::string title,
+                                   std::string description) {
+  BuildLabel(column, std::move(title), title_font_.get(),
+             palette_.text_primary);
+  AddVerticalSpace(column, theme::Spacing(2));
+  BuildLabel(column, std::move(description), body_font_.get(),
+             palette_.text_secondary, true);
+}
+
+void App::BuildModelSettings(ui::Node* column) {
+  BuildSettingsPageHeading(
+      column, "Model",
+      "Lale runs GGUF models with llama.cpp on this PC. Nothing is uploaded.");
+
+  const std::string& model_path = generation_settings_.model_path;
+  const bool model_chosen = !model_path.empty();
+  ui::Node* file_card = BuildSettingsSection(column, "Model file");
+  ui::Node* file_row = file_card->AddChild();
+  YGNodeStyleSetFlexDirection(file_row->yoga_node(), YGFlexDirectionRow);
+  YGNodeStyleSetAlignItems(file_row->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetGap(file_row->yoga_node(), YGGutterColumn, theme::Spacing(3));
+  SetPadding(file_row->yoga_node(), theme::Spacing(4), theme::Spacing(4));
+  BuildStatusDot(file_row, ModelLoaded() ? palette_.success_indicator
+                                         : palette_.warning_indicator);
+  ui::Node* file_text = file_row->AddChild();
+  YGNodeStyleSetFlexGrow(file_text->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(file_text->yoga_node(), 1);
+  YGNodeStyleSetMinWidth(file_text->yoga_node(), 0);
+  YGNodeStyleSetGap(file_text->yoga_node(), YGGutterRow, theme::Spacing(1));
+  ui::Node* file_name = BuildLabel(
+      file_text,
+      model_chosen ? FileNameFromPath(model_path) : "No model selected",
+      label_strong_font_.get(), palette_.text_primary);
+  file_name->style().elides_text = true;
+  ui::Node* file_detail = BuildLabel(
+      file_text, model_chosen ? model_path : "Choose a .gguf file to use.",
+      model_chosen ? monospace_caption_font_.get() : caption_font_.get(),
+      palette_.text_secondary);
+  file_detail->style().elides_text = true;
+  if (model_chosen) {
+    BuildTextButton(file_row, "model-clear", "Remove", ButtonStyle::kLink);
+  }
+  BuildTextButton(
+      file_row, "model-choose", model_chosen ? "Change" : "Choose file",
+      model_chosen ? ButtonStyle::kSecondary : ButtonStyle::kPrimary);
+
+  if (model_state_ == ModelState::kLoading) {
+    AddVerticalSpace(column, theme::Spacing(4));
+    BuildNotice(column, "Loading the model…");
+  } else if (model_state_ == ModelState::kFailed) {
+    AddVerticalSpace(column, theme::Spacing(4));
+    BuildNotice(column, model_error_);
+  }
+
+  ui::Node* runtime_card = BuildSettingsSection(column, "Runtime");
+  const int gpu_layers = generation_settings_.gpu_layer_count;
+  BuildStepperRow(runtime_card, "GPU layers",
+                  llm::InferenceEngine::SupportsGpuOffload()
+                      ? "Layers offloaded to the graphics card. More is faster "
+                        "but uses more video memory."
+                      : "This llama.cpp build runs on the CPU only, so this "
+                        "has no effect.",
+                  "gpu-layers",
+                  gpu_layers >= GenerationSettings::kAllGpuLayers
+                      ? "All"
+                      : std::to_string(gpu_layers));
+  BuildSettingsRowSeparator(runtime_card);
+  const int threads = generation_settings_.thread_count;
+  BuildStepperRow(runtime_card, "CPU threads",
+                  "Threads used for work that stays on the processor.",
+                  "threads",
+                  threads == GenerationSettings::kAutomaticThreadCount
+                      ? "Auto"
+                      : std::to_string(threads));
+  BuildSettingsRowSeparator(runtime_card);
+  BuildStepperRow(runtime_card, "Context size",
+                  "How many tokens of the conversation the model can see.",
+                  "context-size",
+                  std::to_string(generation_settings_.context_size));
+  AddVerticalSpace(column, theme::Spacing(3));
+  BuildLabel(column,
+             "Runtime changes reload the model when you leave Settings.",
+             caption_font_.get(), palette_.text_tertiary, true);
+}
+
+void App::BuildSamplingSettings(ui::Node* column) {
+  BuildSettingsPageHeading(column, "Sampling",
+                           "How the model picks each next token.");
+
+  ui::Node* sampling_card = BuildSettingsSection(column, "Randomness");
+  BuildStepperRow(sampling_card, "Temperature",
+                  "Higher values give more varied replies.", "temperature",
                   FormatDecimal(generation_settings_.temperature));
   BuildSettingsRowSeparator(sampling_card);
-  BuildStepperRow(sampling_card, "Top P", "top-p",
-                  FormatDecimal(generation_settings_.top_p));
+  BuildStepperRow(sampling_card, "Top P",
+                  "Keeps the smallest set of tokens whose odds add up to P.",
+                  "top-p", FormatDecimal(generation_settings_.top_p));
   BuildSettingsRowSeparator(sampling_card);
-  BuildStepperRow(sampling_card, "Top K", "top-k",
-                  std::to_string(generation_settings_.top_k));
+  BuildStepperRow(sampling_card, "Top K",
+                  "Keeps only the K most likely tokens. 0 turns it off.",
+                  "top-k", std::to_string(generation_settings_.top_k));
   BuildSettingsRowSeparator(sampling_card);
-  BuildStepperRow(sampling_card, "Max tokens", "max-tokens",
-                  std::to_string(generation_settings_.maximum_tokens));
-  BuildSettingsRowSeparator(sampling_card);
-  BuildStepperRow(sampling_card, "Context size", "context-size",
-                  std::to_string(generation_settings_.context_size));
+  BuildStepperRow(sampling_card, "Repeat penalty",
+                  "Discourages repeating recent tokens. 1.00 turns it off.",
+                  "repeat-penalty",
+                  FormatDecimal(generation_settings_.repeat_penalty));
 
-  ui::Node* prompt_card = BuildSettingsSection(content, "System prompt");
+  ui::Node* length_card = BuildSettingsSection(column, "Replies");
+  BuildStepperRow(length_card, "Max tokens",
+                  "The longest reply the model may write.", "max-tokens",
+                  std::to_string(generation_settings_.maximum_tokens));
+  BuildSettingsRowSeparator(length_card);
+  BuildToggleRow(length_card, "Stream tokens",
+                 "Show the reply as it is written.", "stream",
+                 generation_settings_.stream_tokens);
+
+  ui::Node* prompt_card = BuildSettingsSection(column, "System prompt");
   const bool system_prompt_focused = focused_field_id_ == kSystemPromptFieldId;
   ui::Node* prompt_field =
       prompt_card->AddChild(std::string(kSystemPromptFieldId));
-  YGNodeStyleSetMinHeight(prompt_field->yoga_node(), 96);
+  YGNodeStyleSetMinHeight(prompt_field->yoga_node(), 120);
   SetPadding(prompt_field->yoga_node(), theme::Spacing(4), theme::Spacing(3));
   prompt_field->style().corner_radius = theme::kBaseCornerRadius;
   prompt_field->style().cursor = CursorKind::kIBeam;
@@ -885,30 +1196,110 @@ void App::BuildSettingsPanel(ui::Node* parent) {
   prompt_text->style().placeholder_color = palette_.text_tertiary;
   prompt_text->style().shows_caret = system_prompt_focused;
 
-  ui::Node* output_card = BuildSettingsSection(content, "Output");
-  BuildToggleRow(output_card, "Stream tokens", "stream",
-                 generation_settings_.stream_tokens);
-
-  ui::Node* reset_row = content->AddChild();
-  YGNodeStyleSetMargin(reset_row->yoga_node(), YGEdgeTop, theme::Spacing(4));
-  YGNodeStyleSetAlignItems(reset_row->yoga_node(), YGAlignFlexStart);
+  ui::Node* reset_row = column->AddChild();
+  MakeRow(reset_row->yoga_node());
+  YGNodeStyleSetMargin(reset_row->yoga_node(), YGEdgeTop, theme::Spacing(6));
+  YGNodeStyleSetGap(reset_row->yoga_node(), YGGutterColumn, theme::Spacing(3));
   BuildTextButton(reset_row, "reset-settings", "Reset to defaults",
-                  ButtonStyle::kLink, !SettingsMatchDefaults());
+                  ButtonStyle::kSecondary, !SettingsMatchDefaults());
+  BuildLabel(reset_row, "Your model file is kept.", caption_font_.get(),
+             palette_.text_tertiary);
 }
 
-void App::BuildStepperRow(ui::Node* card, std::string_view label,
-                          std::string_view setting_key,
-                          std::string value_text) {
+void App::BuildAppearanceSettings(ui::Node* column) {
+  BuildSettingsPageHeading(column, "Appearance",
+                           "Choose how Lale looks on this PC.");
+  ui::Node* theme_card = BuildSettingsSection(column, "Theme");
+  ui::Node* theme_row =
+      BuildSettingsRow(theme_card, "Color scheme",
+                       "System follows the Windows light or dark setting.");
+  const char* selected_key = "system";
+  if (theme_preference_ == ThemePreference::kLight) selected_key = "light";
+  if (theme_preference_ == ThemePreference::kDark) selected_key = "dark";
+  BuildSegmentedControl(
+      theme_row, kThemeIdPrefix,
+      {{"system", "System"}, {"light", "Light"}, {"dark", "Dark"}},
+      selected_key);
+}
+
+void App::BuildShortcutSettings(ui::Node* column) {
+  BuildSettingsPageHeading(column, "Keyboard shortcuts",
+                           "Shortcuts that work anywhere in Lale.");
+  ui::Node* general_card = BuildSettingsSection(column, "General");
+  BuildShortcutRow(general_card, "New chat", "Ctrl N");
+  BuildSettingsRowSeparator(general_card);
+  BuildShortcutRow(general_card, "Open or close Settings", "Ctrl ,");
+  BuildSettingsRowSeparator(general_card);
+  BuildShortcutRow(general_card, "Close Settings or leave a text field", "Esc");
+  ui::Node* typing_card = BuildSettingsSection(column, "Writing");
+  BuildShortcutRow(typing_card, "Send message", "Enter");
+  BuildSettingsRowSeparator(typing_card);
+  BuildShortcutRow(typing_card, "New line", "Shift Enter");
+  BuildSettingsRowSeparator(typing_card);
+  BuildShortcutRow(typing_card, "Paste", "Ctrl V");
+}
+
+void App::BuildShortcutRow(ui::Node* card, std::string_view action,
+                           std::string keys) {
   ui::Node* row = card->AddChild();
   MakeRow(row->yoga_node());
   YGNodeStyleSetHeight(row->yoga_node(), theme::kSettingsRowHeight);
   YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifySpaceBetween);
-  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeLeft, theme::Spacing(4));
-  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeRight, theme::Spacing(2.5f));
-  BuildLabel(row, std::string(label), label_font_.get(), palette_.text_primary);
+  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeHorizontal, theme::Spacing(4));
+  BuildLabel(row, std::string(action), label_font_.get(),
+             palette_.text_primary);
+  BuildKeyHint(row, std::move(keys));
+}
 
+void App::BuildSegmentedControl(ui::Node* parent, std::string_view id_prefix,
+                                const std::vector<SegmentOption>& options,
+                                std::string_view selected_key) {
+  ui::Node* control = parent->AddChild();
+  MakeRow(control->yoga_node());
+  YGNodeStyleSetFlexShrink(control->yoga_node(), 0);
+  YGNodeStyleSetHeight(control->yoga_node(), theme::kControlHeight + 4);
+  YGNodeStyleSetPadding(control->yoga_node(), YGEdgeAll, 3);
+  YGNodeStyleSetGap(control->yoga_node(), YGGutterColumn, 2);
+  control->style().corner_radius = theme::kBaseCornerRadius + 2;
+  control->style().background = palette_.component_background;
+  control->style().border = palette_.border;
+  control->style().border_width = 1;
+  for (const SegmentOption& option : options) {
+    const std::string segment_id = std::string(id_prefix) + option.key;
+    const bool selected = option.key == selected_key;
+    const bool hovered = hovered_node_id_ == segment_id;
+    ui::Node* segment = control->AddChild(segment_id);
+    MakeRow(segment->yoga_node());
+    YGNodeStyleSetHeight(segment->yoga_node(), theme::kControlHeight - 4);
+    YGNodeStyleSetPadding(segment->yoga_node(), YGEdgeHorizontal,
+                          theme::Spacing(3));
+    segment->style().corner_radius = theme::kBaseCornerRadius;
+    segment->style().cursor = CursorKind::kHand;
+    if (selected) {
+      segment->style().background = palette_.background_primary;
+      segment->style().border = palette_.border;
+      segment->style().border_width = 1;
+      segment->style().shadows = palette_.shadow_small;
+    } else {
+      segment->style().background =
+          InteractiveFill(segment_id, theme::kTransparent,
+                          palette_.overlay_hover, palette_.overlay_pressed);
+    }
+    BuildLabel(
+        segment, option.label,
+        selected ? label_strong_font_.get() : label_font_.get(),
+        selected || hovered ? palette_.text_primary : palette_.text_secondary);
+  }
+}
+
+void App::BuildStepperRow(ui::Node* card, std::string_view label,
+                          std::string_view description,
+                          std::string_view setting_key,
+                          std::string value_text) {
+  ui::Node* row = BuildSettingsRow(card, label, description);
   ui::Node* stepper = row->AddChild();
   MakeRow(stepper->yoga_node());
+  YGNodeStyleSetFlexShrink(stepper->yoga_node(), 0);
   YGNodeStyleSetHeight(stepper->yoga_node(), theme::kControlHeight);
   stepper->style().corner_radius = theme::kBaseCornerRadius;
   stepper->style().border = palette_.border;
@@ -919,7 +1310,7 @@ void App::BuildStepperRow(ui::Node* card, std::string_view label,
   BuildIconButton(stepper, id_prefix + "decrease", ui::IconKind::kMinus, 30);
   AddVerticalRule(stepper, palette_.border);
   ui::Node* value_box = stepper->AddChild();
-  YGNodeStyleSetWidth(value_box->yoga_node(), 60);
+  YGNodeStyleSetWidth(value_box->yoga_node(), 64);
   YGNodeStyleSetAlignItems(value_box->yoga_node(), YGAlignCenter);
   BuildLabel(value_box, std::move(value_text), monospace_body_font_.get(),
              palette_.text_primary);
@@ -928,26 +1319,22 @@ void App::BuildStepperRow(ui::Node* card, std::string_view label,
 }
 
 void App::BuildToggleRow(ui::Node* card, std::string_view label,
+                         std::string_view description,
                          std::string_view setting_key, bool enabled) {
   const std::string toggle_id =
       std::string(kToggleIdPrefix) + std::string(setting_key);
-  ui::Node* row = card->AddChild(toggle_id);
-  MakeRow(row->yoga_node());
-  YGNodeStyleSetHeight(row->yoga_node(), theme::kSettingsRowHeight);
-  YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifySpaceBetween);
-  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeHorizontal, theme::Spacing(4));
-  row->style().cursor = CursorKind::kHand;
-  BuildLabel(row, std::string(label), label_font_.get(), palette_.text_primary);
-
-  ui::Node* track = row->AddChild();
+  ui::Node* row = BuildSettingsRow(card, label, description);
+  ui::Node* track = row->AddChild(toggle_id);
   YGNodeStyleSetFlexDirection(track->yoga_node(), YGFlexDirectionRow);
   YGNodeStyleSetAlignItems(track->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetFlexShrink(track->yoga_node(), 0);
   YGNodeStyleSetWidth(track->yoga_node(), 36);
   YGNodeStyleSetHeight(track->yoga_node(), 20);
   YGNodeStyleSetPadding(track->yoga_node(), YGEdgeAll, 2);
   YGNodeStyleSetJustifyContent(track->yoga_node(),
                                enabled ? YGJustifyFlexEnd : YGJustifyFlexStart);
   track->style().corner_radius = 10;
+  track->style().cursor = CursorKind::kHand;
   track->style().background = enabled ? palette_.accent : palette_.toggle_off;
 
   ui::Node* knob = track->AddChild();
@@ -971,7 +1358,13 @@ std::string* App::FocusedText() {
 }
 
 void App::HandleClick(const std::string& node_id) {
-  if (node_id == "new-chat") {
+  if (node_id == kMinimizeButtonId) {
+    window_.Minimize();
+  } else if (node_id == kMaximizeButtonId) {
+    window_.ToggleMaximize();
+  } else if (node_id == kCloseButtonId) {
+    window_.Close();
+  } else if (node_id == "new-chat") {
     StartNewConversation();
   } else if (StartsWith(node_id, kConversationIdPrefix)) {
     size_t index = std::stoul(node_id.substr(kConversationIdPrefix.size()));
@@ -980,12 +1373,31 @@ void App::HandleClick(const std::string& node_id) {
       message_scroll_pinned_to_bottom_ = true;
     }
   } else if (node_id == "settings-toggle") {
-    settings_panel_open_ = !settings_panel_open_;
-  } else if (node_id == "settings-close") {
-    settings_panel_open_ = false;
+    OpenSettings(settings_section_);
+  } else if (node_id == "settings-back") {
+    CloseSettings();
   } else if (node_id == "model-picker" || node_id == "empty-open-settings") {
-    settings_panel_open_ = true;
-    settings_scroll_offset_ = 0;
+    OpenSettings(SettingsSection::kModel);
+  } else if (StartsWith(node_id, kSettingsSectionIdPrefix)) {
+    std::string_view key =
+        std::string_view(node_id).substr(kSettingsSectionIdPrefix.size());
+    if (key == "model") OpenSettings(SettingsSection::kModel);
+    if (key == "sampling") OpenSettings(SettingsSection::kSampling);
+    if (key == "appearance") OpenSettings(SettingsSection::kAppearance);
+    if (key == "shortcuts") OpenSettings(SettingsSection::kShortcuts);
+  } else if (node_id == "model-choose") {
+    ChooseModelFile();
+  } else if (node_id == "model-clear") {
+    generation_settings_.model_path.clear();
+    RequestModelLoad();
+  } else if (node_id == "stop") {
+    StopGeneration();
+  } else if (StartsWith(node_id, kThemeIdPrefix)) {
+    std::string_view key =
+        std::string_view(node_id).substr(kThemeIdPrefix.size());
+    if (key == "system") SetThemePreference(ThemePreference::kSystem);
+    if (key == "light") SetThemePreference(ThemePreference::kLight);
+    if (key == "dark") SetThemePreference(ThemePreference::kDark);
   } else if (node_id == "send") {
     SendComposerMessage();
   } else if (node_id == "reset-settings") {
@@ -1001,9 +1413,56 @@ void App::HandleClick(const std::string& node_id) {
   }
 }
 
+void App::OpenSettings(SettingsSection section) {
+  if (!settings_page_open_ || settings_section_ != section) {
+    settings_scroll_offset_ = 0;
+  }
+  settings_page_open_ = true;
+  settings_section_ = section;
+  focused_field_id_.clear();
+}
+
+void App::CloseSettings() {
+  SaveSettingsIfChanged();
+  RequestModelLoad();
+  settings_page_open_ = false;
+  focused_field_id_ = std::string(kComposerFieldId);
+}
+
+void App::ChooseModelFile() {
+  pressed_node_id_.clear();
+  hovered_node_id_.clear();
+  std::optional<std::string> chosen_path =
+      ShowOpenFileDialog(window_.hwnd(), L"GGUF models (*.gguf)", L"*.gguf");
+  if (chosen_path) {
+    generation_settings_.model_path = std::move(*chosen_path);
+    RequestModelLoad();
+  }
+  Invalidate();
+}
+
+void App::SetThemePreference(ThemePreference preference) {
+  theme_preference_ = preference;
+  ApplySystemAppearance();
+}
+
 void App::StepSetting(std::string_view setting_key, int direction) {
   GenerationSettings& settings = generation_settings_;
-  if (setting_key == "temperature") {
+  const int hardware_threads =
+      std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+  if (setting_key == "repeat-penalty") {
+    settings.repeat_penalty = std::clamp(
+        std::round((settings.repeat_penalty + 0.05f * direction) * 100) / 100,
+        1.0f, 2.0f);
+  } else if (setting_key == "gpu-layers") {
+    settings.gpu_layer_count =
+        std::clamp(settings.gpu_layer_count + 4 * direction, 0,
+                   GenerationSettings::kAllGpuLayers);
+  } else if (setting_key == "threads") {
+    settings.thread_count =
+        std::clamp(settings.thread_count + direction,
+                   GenerationSettings::kAutomaticThreadCount, hardware_threads);
+  } else if (setting_key == "temperature") {
     settings.temperature = std::clamp(
         std::round((settings.temperature + 0.05f * direction) * 100) / 100,
         0.0f, 2.0f);
@@ -1024,14 +1483,9 @@ void App::StepSetting(std::string_view setting_key, int direction) {
 }
 
 bool App::SettingsMatchDefaults() const {
-  const GenerationSettings defaults;
-  const GenerationSettings& current = generation_settings_;
-  return current.temperature == defaults.temperature &&
-         current.top_p == defaults.top_p && current.top_k == defaults.top_k &&
-         current.maximum_tokens == defaults.maximum_tokens &&
-         current.context_size == defaults.context_size &&
-         current.stream_tokens == defaults.stream_tokens &&
-         current.system_prompt == defaults.system_prompt;
+  GenerationSettings defaults;
+  defaults.model_path = generation_settings_.model_path;
+  return generation_settings_ == defaults;
 }
 
 void App::ResetSettingsToDefaults() {
@@ -1042,17 +1496,47 @@ void App::ResetSettingsToDefaults() {
 
 void App::SendComposerMessage() {
   std::string message_text = TrimWhitespace(composer_text_);
-  if (message_text.empty()) return;
+  if (message_text.empty() || generating_) return;
   Conversation& conversation = conversations_[active_conversation_index_];
   if (conversation.messages.empty() &&
       conversation.title == kNewConversationTitle) {
     conversation.title = message_text.substr(0, message_text.find('\n'));
   }
-  conversation.messages.push_back({MessageRole::kUser, message_text, false});
-  conversation.messages.push_back(
-      {MessageRole::kAssistant, std::string(kNoModelNotice), true});
+  conversation.messages.push_back({MessageRole::kUser, message_text});
   composer_text_.clear();
   message_scroll_pinned_to_bottom_ = true;
+  if (!ModelLoaded()) {
+    conversation.messages.push_back(
+        {MessageRole::kAssistant,
+         std::string(model_state_ == ModelState::kLoading ? kLoadingNotice
+                                                          : kNoModelNotice),
+         true});
+    return;
+  }
+
+  std::vector<llm::PromptMessage> prompt;
+  const std::string system_prompt =
+      TrimWhitespace(generation_settings_.system_prompt);
+  if (!system_prompt.empty()) prompt.push_back({"system", system_prompt});
+  for (const ChatMessage& message : conversation.messages) {
+    if (message.is_notice) continue;
+    prompt.push_back({message.role == MessageRole::kUser ? "user" : "assistant",
+                      message.text});
+  }
+  const GenerationSettings& settings = generation_settings_;
+  llm::SamplingOptions sampling;
+  sampling.temperature = settings.temperature;
+  sampling.top_p = settings.top_p;
+  sampling.top_k = settings.top_k;
+  sampling.repeat_penalty = settings.repeat_penalty;
+  sampling.maximum_tokens = settings.maximum_tokens;
+
+  ChatMessage reply{MessageRole::kAssistant};
+  reply.is_streaming = true;
+  conversation.messages.push_back(std::move(reply));
+  generating_ = true;
+  generating_conversation_index_ = active_conversation_index_;
+  inference_engine_->Generate(std::move(prompt), sampling);
 }
 
 void App::StartNewConversation() {
@@ -1061,6 +1545,7 @@ void App::StartNewConversation() {
     conversations_.insert(conversations_.begin(),
                           Conversation{std::string(kNewConversationTitle), {}});
     active_conversation_index_ = 0;
+    if (generating_) ++generating_conversation_index_;
   }
   composer_text_.clear();
   focused_field_id_ = std::string(kComposerFieldId);
@@ -1120,6 +1605,7 @@ void App::OnMouseUp(float x, float y) {
   if (!pressed_id.empty() && pressed_id == released_id) {
     HandleClick(pressed_id);
   }
+  SaveSettingsIfChanged();
   Invalidate();
 }
 
@@ -1158,13 +1644,17 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     return;
   }
   if (control_down && virtual_key == VK_OEM_COMMA) {
-    settings_panel_open_ = !settings_panel_open_;
-    Invalidate();
+    if (settings_page_open_) {
+      CloseSettings();
+    } else {
+      OpenSettings(settings_section_);
+    }
+    ResetCaretBlink();
     return;
   }
   if (virtual_key == VK_ESCAPE) {
-    if (settings_panel_open_) {
-      settings_panel_open_ = false;
+    if (settings_page_open_ && focused_field_id_.empty()) {
+      CloseSettings();
     } else {
       focused_field_id_.clear();
     }
@@ -1192,6 +1682,19 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
 void App::OnCaretTimer() {
   if (focused_field_id_.empty()) return;
   caret_visible_ = !caret_visible_;
+  Invalidate();
+}
+
+WindowRegion App::RegionAt(float x, float y) {
+  if (y / device_pixels_per_point_ >= theme::kTitleBarHeight) {
+    return WindowRegion::kClient;
+  }
+  const ui::Node* node = HitTestDevicePoint(x, y);
+  return node ? WindowRegion::kClient : WindowRegion::kCaption;
+}
+
+void App::OnActivationChanged(bool active) {
+  window_active_ = active;
   Invalidate();
 }
 

@@ -136,6 +136,41 @@ void DrawCaptionGlyph(const NodeStyle& style, const Rect& bounds,
   target_scene->add(glyph);
 }
 
+void DrawRichText(const NodeStyle& style, const Rect& bounds,
+                  tvg::Scene* target_scene) {
+  constexpr float kBackgroundPadding = 3.0f;
+  constexpr float kBackgroundCornerRadius = 4.0f;
+  float line_top = bounds.y;
+  for (const RichTextLine& line : LayoutRichText(style.spans, bounds.width)) {
+    for (const RichTextFragment& fragment : line.fragments) {
+      if (fragment.end_byte <= fragment.begin_byte) continue;
+      const TextSpan& span = style.spans[fragment.span_index];
+      const float text_top = line_top + line.ascent - span.font->ascent();
+      if (IsVisible(span.background)) {
+        tvg::Shape* background = MakeRoundedRect(
+            {bounds.x + fragment.x - kBackgroundPadding, text_top,
+             fragment.width + 2 * kBackgroundPadding, span.font->line_height()},
+            kBackgroundCornerRadius);
+        background->fill(span.background.red, span.background.green,
+                         span.background.blue, span.background.alpha);
+        target_scene->add(background);
+      }
+      std::string fragment_text = span.text.substr(
+          fragment.begin_byte, fragment.end_byte - fragment.begin_byte);
+      tvg::Text* text = tvg::Text::gen();
+      text->font(span.font->font_key().empty() ? nullptr
+                                               : span.font->font_key().c_str());
+      text->size(span.font->point_size());
+      text->text(fragment_text.c_str());
+      text->fill(span.color.red, span.color.green, span.color.blue);
+      if (span.color.alpha < 255) text->opacity(span.color.alpha);
+      text->translate(bounds.x + fragment.x, text_top);
+      target_scene->add(text);
+    }
+    line_top += line.height;
+  }
+}
+
 void DrawIcon(const NodeStyle& style, const Rect& bounds,
               tvg::Scene* target_scene) {
   switch (style.icon) {
@@ -272,7 +307,11 @@ void Renderer::DrawNode(const Node& node, tvg::Scene* target_scene,
                        style.border.alpha);
     target_scene->add(border);
   }
-  if (style.font) DrawText(node, target_scene, caret_visible);
+  if (!style.spans.empty()) {
+    DrawRichText(style, bounds, target_scene);
+  } else if (style.font) {
+    DrawText(node, target_scene, caret_visible);
+  }
   if (style.icon != IconKind::kNone) DrawIcon(style, bounds, target_scene);
 
   tvg::Scene* children_scene = target_scene;

@@ -9,16 +9,11 @@
 #include <vector>
 
 #include "platform/Window.h"
+#include "ui/Color.h"
 #include "ui/Font.h"
+#include "ui/RichText.h"
 
 namespace lale::ui {
-
-struct Color {
-  uint8_t red = 0;
-  uint8_t green = 0;
-  uint8_t blue = 0;
-  uint8_t alpha = 0;
-};
 
 struct Rect {
   float x = 0;
@@ -62,6 +57,7 @@ struct NodeStyle {
   Color outer_ring;
   float outer_ring_width = 0;
 
+  std::vector<TextSpan> spans;
   std::string text;
   std::string placeholder;
   const Font* font = nullptr;

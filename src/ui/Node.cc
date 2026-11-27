@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace lale::ui {
 
@@ -11,6 +12,23 @@ YGSize MeasureTextNode(YGNodeConstRef yoga_node, float available_width,
                        YGMeasureMode width_mode, float, YGMeasureMode) {
   const auto* node = static_cast<const Node*>(YGNodeGetContext(yoga_node));
   const NodeStyle& style = node->style();
+  if (!style.spans.empty()) {
+    const float wrap_width = width_mode == YGMeasureModeUndefined
+                                 ? std::numeric_limits<float>::max()
+                                 : available_width;
+    float widest_line = 0;
+    float total_height = 0;
+    for (const RichTextLine& line : LayoutRichText(style.spans, wrap_width)) {
+      widest_line = std::max(widest_line, line.width);
+      total_height += line.height;
+    }
+    float measured_width = std::ceil(widest_line);
+    if (width_mode == YGMeasureModeExactly) measured_width = available_width;
+    if (width_mode == YGMeasureModeAtMost) {
+      measured_width = std::min(measured_width, available_width);
+    }
+    return {measured_width, std::ceil(total_height)};
+  }
   if (!style.font) return {0, 0};
   const std::string& shown_text =
       style.text.empty() ? style.placeholder : style.text;

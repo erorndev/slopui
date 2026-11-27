@@ -11,6 +11,7 @@
 #include "llm/InferenceEngine.h"
 #include "platform/Window.h"
 #include "ui/Font.h"
+#include "ui/Markdown.h"
 #include "ui/Node.h"
 #include "ui/Renderer.h"
 
@@ -88,6 +89,12 @@ class App : public WindowHandler {
   void BuildChatArea(ui::Node* parent);
   void BuildTopBar(ui::Node* parent);
   void BuildMessageList(ui::Node* parent);
+  void BuildMarkdown(ui::Node* parent, std::string_view markdown);
+  void BuildMarkdownBlock(ui::Node* parent, const ui::MarkdownBlock& block);
+  void BuildMarkdownTable(ui::Node* parent, const ui::MarkdownBlock& block);
+  ui::Node* BuildRichText(ui::Node* parent, const ui::MarkdownInlines& inlines,
+                          const ui::Font* regular_font,
+                          const ui::Font* strong_font, ui::Color color);
   void BuildEmptyState(ui::Node* parent);
   void BuildComposer(ui::Node* parent);
   void BuildSettingsNavigation(ui::Node* parent);
@@ -161,6 +168,10 @@ class App : public WindowHandler {
   std::unique_ptr<ui::Font> body_strong_font_;
   std::unique_ptr<ui::Font> headline_font_;
   std::unique_ptr<ui::Font> title_font_;
+  std::unique_ptr<ui::Font> body_italic_font_;
+  std::unique_ptr<ui::Font> body_strong_italic_font_;
+  std::unique_ptr<ui::Font> large_heading_font_;
+  std::unique_ptr<ui::Font> medium_heading_font_;
   std::unique_ptr<ui::Node> interface_root_;
   std::unique_ptr<llm::InferenceEngine> inference_engine_;
 

@@ -21,8 +21,10 @@ add_executable(lale WIN32
     src/platform/SystemAppearance.cc
     src/platform/Window.cc
     src/ui/Font.cc
+    src/ui/Markdown.cc
     src/ui/Node.cc
-    src/ui/Renderer.cc)
+    src/ui/Renderer.cc
+    src/ui/RichText.cc)
 target_include_directories(lale PRIVATE src)
 target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi dwmapi ole32 uuid shell32 llama)
 target_compile_definitions(lale PRIVATE UNICODE _UNICODE)
@@ -32,4 +34,6 @@ add_custom_command(TARGET lale POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-Regular.ttf
         ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-SemiBold.ttf
+        ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-Italic.ttf
+        ${CMAKE_SOURCE_DIR}/vendor/inter/Inter-SemiBoldItalic.ttf
         $<TARGET_FILE_DIR:lale>/fonts)

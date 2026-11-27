@@ -338,6 +338,22 @@ void App::LoadFonts() {
   std::string monospace_font_key =
       LoadFirstAvailableFont({"CascadiaMono.ttf", "consola.ttf"});
   if (monospace_font_key.empty()) monospace_font_key = regular_font_key;
+  std::string italic_font_key =
+      LoadFirstAvailableFont({"Inter-Italic.ttf", "segoeuii.ttf"});
+  if (italic_font_key.empty()) italic_font_key = regular_font_key;
+  std::string semibold_italic_font_key =
+      LoadFirstAvailableFont({"Inter-SemiBoldItalic.ttf", "seguisbi.ttf"});
+  if (semibold_italic_font_key.empty()) {
+    semibold_italic_font_key = semibold_font_key;
+  }
+  body_italic_font_ =
+      std::make_unique<ui::Font>(italic_font_key, theme::kBodyPointSize);
+  body_strong_italic_font_ = std::make_unique<ui::Font>(
+      semibold_italic_font_key, theme::kBodyPointSize);
+  large_heading_font_ = std::make_unique<ui::Font>(
+      semibold_font_key, theme::kLargeHeadingPointSize);
+  medium_heading_font_ = std::make_unique<ui::Font>(
+      semibold_font_key, theme::kMediumHeadingPointSize);
   caption_font_ =
       std::make_unique<ui::Font>(regular_font_key, theme::kCaptionPointSize);
   caption_strong_font_ =
@@ -831,8 +847,162 @@ void App::BuildMessageList(ui::Node* parent) {
                (message.text.empty() || !generation_settings_.stream_tokens)) {
       BuildLabel(column, "Writing…", body_font_.get(), palette_.text_tertiary);
     } else {
-      BuildLabel(column, message.text, body_font_.get(), palette_.text_primary,
-                 true);
+      BuildMarkdown(column, message.text);
+    }
+  }
+}
+
+ui::Node* App::BuildRichText(ui::Node* parent,
+                             const ui::MarkdownInlines& inlines,
+                             const ui::Font* regular_font,
+                             const ui::Font* strong_font, ui::Color color) {
+  ui::Node* text = parent->AddChild();
+  for (const ui::MarkdownInline& piece : inlines) {
+    ui::TextSpan span;
+    span.text = piece.text;
+    span.color = piece.link ? palette_.accent_text : color;
+    span.font = piece.bold ? strong_font : regular_font;
+    if (piece.italic && regular_font == body_font_.get()) {
+      span.font =
+          piece.bold ? body_strong_italic_font_.get() : body_italic_font_.get();
+    }
+    if (piece.code) {
+      span.font = monospace_body_font_.get();
+      span.background = palette_.overlay_selected;
+    }
+    text->style().spans.push_back(std::move(span));
+  }
+  if (text->style().spans.empty()) {
+    text->style().spans.push_back({" ", regular_font, color});
+  }
+  YGNodeStyleSetFlexShrink(text->yoga_node(), 1);
+  text->EnableTextMeasurement();
+  return text;
+}
+
+void App::BuildMarkdown(ui::Node* parent, std::string_view markdown) {
+  ui::Node* document = parent->AddChild();
+  YGNodeStyleSetGap(document->yoga_node(), YGGutterRow, theme::Spacing(3));
+  ui::Node* list = nullptr;
+  for (const ui::MarkdownBlock& block : ui::ParseMarkdown(markdown)) {
+    if (block.kind != ui::MarkdownBlockKind::kListItem) {
+      list = nullptr;
+      BuildMarkdownBlock(document, block);
+      continue;
+    }
+    if (!list) {
+      list = document->AddChild();
+      YGNodeStyleSetGap(list->yoga_node(), YGGutterRow, theme::Spacing(1.5f));
+    }
+    BuildMarkdownBlock(list, block);
+  }
+}
+
+void App::BuildMarkdownBlock(ui::Node* parent, const ui::MarkdownBlock& block) {
+  using ui::MarkdownBlockKind;
+  switch (block.kind) {
+    case MarkdownBlockKind::kParagraph:
+      BuildRichText(parent, block.inlines, body_font_.get(),
+                    body_strong_font_.get(), palette_.text_primary);
+      return;
+    case MarkdownBlockKind::kHeading: {
+      const ui::Font* font = block.level == 1   ? large_heading_font_.get()
+                             : block.level == 2 ? medium_heading_font_.get()
+                                                : body_strong_font_.get();
+      ui::Node* heading = BuildRichText(parent, block.inlines, font, font,
+                                        palette_.text_primary);
+      YGNodeStyleSetMargin(heading->yoga_node(), YGEdgeTop,
+                           block.level <= 2 ? theme::Spacing(2) : 0);
+      return;
+    }
+    case MarkdownBlockKind::kCodeBlock: {
+      ui::Node* box = parent->AddChild();
+      YGNodeStyleSetGap(box->yoga_node(), YGGutterRow, theme::Spacing(2));
+      SetPadding(box->yoga_node(), theme::Spacing(3.5f), theme::Spacing(3));
+      box->style().corner_radius = theme::kBaseCornerRadius;
+      box->style().background = palette_.component_background;
+      box->style().border = palette_.border;
+      box->style().border_width = 1;
+      if (!block.language.empty()) {
+        BuildLabel(box, block.language, monospace_caption_font_.get(),
+                   palette_.text_tertiary);
+      }
+      BuildLabel(box, block.code.empty() ? " " : block.code,
+                 monospace_body_font_.get(), palette_.text_primary, true);
+      return;
+    }
+    case MarkdownBlockKind::kListItem: {
+      ui::Node* row = parent->AddChild();
+      YGNodeStyleSetFlexDirection(row->yoga_node(), YGFlexDirectionRow);
+      YGNodeStyleSetPadding(
+          row->yoga_node(), YGEdgeLeft,
+          theme::kListMarkerWidth * static_cast<float>(block.level));
+      ui::Node* marker = row->AddChild();
+      YGNodeStyleSetWidth(marker->yoga_node(), theme::kListMarkerWidth);
+      YGNodeStyleSetFlexShrink(marker->yoga_node(), 0);
+      BuildLabel(
+          marker,
+          block.ordered ? std::to_string(block.number) + "." : "\xE2\x80\xA2",
+          body_font_.get(), palette_.text_secondary);
+      ui::Node* text =
+          BuildRichText(row, block.inlines, body_font_.get(),
+                        body_strong_font_.get(), palette_.text_primary);
+      YGNodeStyleSetFlexGrow(text->yoga_node(), 1);
+      YGNodeStyleSetFlexBasis(text->yoga_node(), 0);
+      return;
+    }
+    case MarkdownBlockKind::kQuote: {
+      ui::Node* row = parent->AddChild();
+      YGNodeStyleSetFlexDirection(row->yoga_node(), YGFlexDirectionRow);
+      YGNodeStyleSetGap(row->yoga_node(), YGGutterColumn, theme::Spacing(3));
+      ui::Node* bar = row->AddChild();
+      YGNodeStyleSetWidth(bar->yoga_node(), theme::kQuoteBarWidth);
+      YGNodeStyleSetFlexShrink(bar->yoga_node(), 0);
+      bar->style().corner_radius = theme::kQuoteBarWidth / 2;
+      bar->style().background = palette_.border_hover;
+      ui::Node* text =
+          BuildRichText(row, block.inlines, body_font_.get(),
+                        body_strong_font_.get(), palette_.text_secondary);
+      YGNodeStyleSetFlexGrow(text->yoga_node(), 1);
+      YGNodeStyleSetFlexBasis(text->yoga_node(), 0);
+      return;
+    }
+    case MarkdownBlockKind::kRule:
+      AddHorizontalRule(parent, palette_.border);
+      return;
+    case MarkdownBlockKind::kTable:
+      BuildMarkdownTable(parent, block);
+      return;
+  }
+}
+
+void App::BuildMarkdownTable(ui::Node* parent, const ui::MarkdownBlock& block) {
+  if (block.table_rows.empty()) return;
+  const size_t column_count = block.table_rows.front().size();
+  ui::Node* table = parent->AddChild();
+  table->style().corner_radius = theme::kBaseCornerRadius;
+  table->style().border = palette_.border;
+  table->style().border_width = 1;
+  for (size_t row_index = 0; row_index < block.table_rows.size(); ++row_index) {
+    if (row_index > 0) AddHorizontalRule(table, palette_.border);
+    const bool is_header = row_index == 0;
+    ui::Node* row = table->AddChild();
+    YGNodeStyleSetFlexDirection(row->yoga_node(), YGFlexDirectionRow);
+    if (is_header) {
+      row->style().background = palette_.component_background;
+      row->style().corner_radius = theme::kBaseCornerRadius;
+    }
+    const auto& cells = block.table_rows[row_index];
+    for (size_t column = 0; column < column_count; ++column) {
+      ui::Node* cell = row->AddChild();
+      YGNodeStyleSetFlexGrow(cell->yoga_node(), 1);
+      YGNodeStyleSetFlexBasis(cell->yoga_node(), 0);
+      YGNodeStyleSetMinWidth(cell->yoga_node(), 0);
+      SetPadding(cell->yoga_node(), theme::Spacing(3), theme::Spacing(2));
+      const ui::MarkdownInlines empty_cell;
+      BuildRichText(cell, column < cells.size() ? cells[column] : empty_cell,
+                    is_header ? body_strong_font_.get() : body_font_.get(),
+                    body_strong_font_.get(), palette_.text_primary);
     }
   }
 }

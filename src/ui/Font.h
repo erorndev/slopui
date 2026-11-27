@@ -35,11 +35,10 @@ class Font {
   std::vector<TextLine> Wrap(std::string_view utf8_text,
                              float maximum_width) const;
   std::string Elide(std::string_view utf8_text, float maximum_width) const;
-
- private:
   float GlyphAdvance(std::string_view utf8_text, size_t byte_offset,
                      size_t* glyph_byte_length) const;
 
+ private:
   std::string font_key_;
   float point_size_;
   float line_height_ = 0;

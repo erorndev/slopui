@@ -72,6 +72,8 @@ inline constexpr float kSettingsRowHeight = 48;
 inline constexpr float kControlHeight = 32;
 inline constexpr float kMessageColumnMaximumWidth = 720;
 inline constexpr float kComposerMaximumTextHeight = 200;
+inline constexpr float kListMarkerWidth = 20;
+inline constexpr float kQuoteBarWidth = 3;
 inline constexpr float kWheelScrollDistance = 56;
 
 inline constexpr float kBaseCornerRadius = 6;
@@ -85,6 +87,8 @@ inline constexpr float kLabelPointSize = PointsFromPixels(13);
 inline constexpr float kBodyPointSize = PointsFromPixels(14);
 inline constexpr float kHeadlinePointSize = PointsFromPixels(16);
 inline constexpr float kTitlePointSize = PointsFromPixels(24);
+inline constexpr float kLargeHeadingPointSize = PointsFromPixels(20);
+inline constexpr float kMediumHeadingPointSize = PointsFromPixels(17);
 inline constexpr float kMonospaceCaptionPointSize = PointsFromPixels(11);
 inline constexpr float kMonospaceBodyPointSize = PointsFromPixels(13);
 

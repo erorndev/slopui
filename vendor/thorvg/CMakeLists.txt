@@ -49,7 +49,7 @@ set(TVG_SOURCES
     ${TVG_SRC}/modules/sfnt/tvgOtfReader.cpp
 )
 
-if(THORVG_SIMD)
+if(THORVG_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set(TVG_SIMD_SOURCE ${TVG_SRC}/renderer/cpu_engine/tvgSwRasterSimd.cpp)
     list(APPEND TVG_SOURCES ${TVG_SIMD_SOURCE})
     if(MSVC)
@@ -71,10 +71,12 @@ foreach(flag
         THORVG_SFNT_LOADER_SUPPORT
         THORVG_TTF_LOADER_SUPPORT
         THORVG_OTF_LOADER_SUPPORT
-        THORVG_FILE_IO_SUPPORT
-        WIN32_LEAN_AND_MEAN)
+        THORVG_FILE_IO_SUPPORT)
     string(APPEND TVG_CONFIG "#define ${flag} 1\n")
 endforeach()
+if(WIN32)
+    string(APPEND TVG_CONFIG "#define WIN32_LEAN_AND_MEAN 1\n")
+endif()
 if(THORVG_AVX_SUPPORT)
     string(APPEND TVG_CONFIG "#define THORVG_AVX_SUPPORT 1\n")
 endif()
@@ -82,7 +84,10 @@ file(CONFIGURE OUTPUT ${TVG_CONFIG_DIR}/config.h CONTENT "${TVG_CONFIG}")
 
 add_library(thorvg STATIC ${TVG_SOURCES})
 target_compile_features(thorvg PUBLIC cxx_std_14)
-target_compile_definitions(thorvg PUBLIC TVG_STATIC PRIVATE NOMINMAX)
+target_compile_definitions(thorvg PUBLIC TVG_STATIC)
+if(WIN32)
+    target_compile_definitions(thorvg PRIVATE NOMINMAX)
+endif()
 target_include_directories(thorvg
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/inc
     PRIVATE ${TVG_CONFIG_DIR}

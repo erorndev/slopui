@@ -22,7 +22,7 @@ namespace lale {
 
 enum class ModelState { kNone, kLoading, kLoaded, kFailed };
 
-enum class ButtonStyle { kPrimary, kSecondary, kLink };
+enum class ButtonStyle { kPrimary, kSecondary, kLink, kQuiet };
 
 enum class SettingsSection { kModel, kSampling, kAppearance, kShortcuts };
 
@@ -150,6 +150,16 @@ class App : public WindowHandler {
   bool SettingsMatchDefaults() const;
   void ResetSettingsToDefaults();
   void SendComposerMessage();
+  void GenerateReply(Conversation* conversation);
+  void RegenerateLastReply();
+  void EditLastUserMessage();
+  void StartRenamingConversation();
+  void FinishRenamingConversation(bool keep_changes);
+  void DeleteActiveConversation();
+  void CopyToClipboard(std::string_view text, const std::string& button_id);
+  void BuildMessageActions(ui::Node* parent, size_t message_index,
+                           bool is_last_message);
+  ui::Node* BuildCopyButton(ui::Node* parent, std::string id);
   void StartNewConversation();
   bool IsTextField(std::string_view node_id) const;
   std::optional<TextFieldEditor> FocusedEditor();
@@ -204,6 +214,13 @@ class App : public WindowHandler {
   ui::TextEditHistory composer_history_;
   ui::TextSelection system_prompt_selection_;
   ui::TextEditHistory system_prompt_history_;
+  std::string rename_text_;
+  ui::TextSelection rename_selection_;
+  ui::TextEditHistory rename_history_;
+  bool renaming_conversation_ = false;
+  bool delete_confirmation_pending_ = false;
+  std::string copied_button_id_;
+  std::vector<std::string> copyable_code_blocks_;
   bool dragging_text_selection_ = false;
   float preferred_caret_x_ = -1;
   bool window_active_ = true;

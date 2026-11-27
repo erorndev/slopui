@@ -17,6 +17,9 @@ namespace {
 
 constexpr std::string_view kComposerFieldId = "composer";
 constexpr std::string_view kSystemPromptFieldId = "system-prompt";
+constexpr std::string_view kRenameFieldId = "rename-field";
+constexpr std::string_view kCopyMessageIdPrefix = "copy-message:";
+constexpr std::string_view kCopyCodeIdPrefix = "copy-code:";
 constexpr std::string_view kMessageViewportId = "message-viewport";
 constexpr std::string_view kSettingsViewportId = "settings-viewport";
 constexpr std::string_view kTextNodeSuffix = "#text";
@@ -446,6 +449,7 @@ ui::Color App::InteractiveFill(std::string_view node_id, ui::Color resting,
 }
 
 std::unique_ptr<ui::Node> App::BuildInterface() {
+  copyable_code_blocks_.clear();
   auto root = std::make_unique<ui::Node>();
   root->style().background = palette_.background_primary;
   BuildTitleBar(root.get());
@@ -676,6 +680,18 @@ ui::Node* App::BuildTextButton(ui::Node* parent, std::string id,
                    : hovered ? palette_.text_primary
                              : palette_.accent_text;
       break;
+    case ButtonStyle::kQuiet:
+      YGNodeStyleSetHeight(button->yoga_node(), 24);
+      YGNodeStyleSetPadding(button->yoga_node(), YGEdgeHorizontal,
+                            theme::Spacing(1.5f));
+      font = caption_font_.get();
+      button->style().background =
+          InteractiveFill(interactive_id, theme::kTransparent,
+                          palette_.overlay_hover, palette_.overlay_pressed);
+      text_color = !enabled  ? palette_.text_tertiary
+                   : hovered ? palette_.text_primary
+                             : palette_.text_secondary;
+      break;
   }
   BuildLabel(button, std::move(label), font, text_color);
   return button;
@@ -792,11 +808,52 @@ void App::BuildTopBar(ui::Node* parent) {
   YGNodeStyleSetPadding(top_bar->yoga_node(), YGEdgeLeft, theme::Spacing(6));
   YGNodeStyleSetPadding(top_bar->yoga_node(), YGEdgeRight, theme::Spacing(4));
 
-  ui::Node* title =
-      BuildLabel(top_bar, conversations_[active_conversation_index_].title,
-                 body_strong_font_.get(), palette_.text_primary);
-  YGNodeStyleSetFlexShrink(title->yoga_node(), 1);
-  title->style().elides_text = true;
+  ui::Node* title_group = top_bar->AddChild();
+  MakeRow(title_group->yoga_node());
+  YGNodeStyleSetFlexShrink(title_group->yoga_node(), 1);
+  YGNodeStyleSetMinWidth(title_group->yoga_node(), 0);
+  YGNodeStyleSetGap(title_group->yoga_node(), YGGutterColumn,
+                    theme::Spacing(2));
+  if (renaming_conversation_) {
+    ui::Node* field_box = title_group->AddChild(std::string(kRenameFieldId));
+    YGNodeStyleSetWidth(field_box->yoga_node(), 320);
+    YGNodeStyleSetFlexShrink(field_box->yoga_node(), 1);
+    SetPadding(field_box->yoga_node(), theme::Spacing(2.5f),
+               theme::Spacing(1.5f));
+    field_box->style().corner_radius = theme::kBaseCornerRadius;
+    field_box->style().background = palette_.background_primary;
+    field_box->style().border = palette_.border_hover;
+    field_box->style().border_width = 1;
+    field_box->style().cursor = CursorKind::kIBeam;
+    if (focused_field_id_ == kRenameFieldId) {
+      field_box->style().outer_ring = palette_.focus_halo;
+      field_box->style().outer_ring_width = 3;
+    }
+    ui::Node* field_text =
+        BuildEditableText(field_box, kRenameFieldId, rename_text_,
+                          rename_selection_, "Chat name");
+    field_text->style().wraps_text = false;
+    BuildTextButton(title_group, "rename-save", "Save",
+                    ButtonStyle::kSecondary);
+    BuildTextButton(title_group, "rename-cancel", "Cancel", ButtonStyle::kLink);
+  } else {
+    const Conversation& conversation =
+        conversations_[active_conversation_index_];
+    ui::Node* title =
+        BuildLabel(title_group, conversation.title, body_strong_font_.get(),
+                   palette_.text_primary);
+    YGNodeStyleSetFlexShrink(title->yoga_node(), 1);
+    title->style().elides_text = true;
+    if (!conversation.messages.empty()) {
+      BuildTextButton(title_group, "rename", "Rename", ButtonStyle::kQuiet);
+      const bool deletable = !(generating_ && generating_conversation_index_ ==
+                                                  active_conversation_index_);
+      BuildTextButton(
+          title_group, "delete",
+          delete_confirmation_pending_ ? "Confirm delete" : "Delete",
+          ButtonStyle::kQuiet, deletable);
+    }
+  }
 
   const std::string model_picker_id = "model-picker";
   const bool model_chosen = !generation_settings_.model_path.empty();
@@ -858,9 +915,12 @@ void App::BuildMessageList(ui::Node* parent) {
   YGNodeStyleSetPadding(column->yoga_node(), YGEdgeHorizontal,
                         theme::Spacing(6));
 
-  for (const ChatMessage& message : conversation.messages) {
+  for (size_t index = 0; index < conversation.messages.size(); ++index) {
+    const ChatMessage& message = conversation.messages[index];
+    ui::Node* group = column->AddChild();
+    YGNodeStyleSetGap(group->yoga_node(), YGGutterRow, theme::Spacing(1.5f));
     if (message.role == MessageRole::kUser) {
-      ui::Node* row = column->AddChild();
+      ui::Node* row = group->AddChild();
       YGNodeStyleSetFlexDirection(row->yoga_node(), YGFlexDirectionRow);
       YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifyFlexEnd);
       ui::Node* bubble = row->AddChild();
@@ -874,14 +934,60 @@ void App::BuildMessageList(ui::Node* parent) {
       BuildLabel(bubble, message.text, body_font_.get(), palette_.text_primary,
                  true);
     } else if (message.is_notice) {
-      BuildNotice(column, message.text);
+      BuildNotice(group, message.text);
     } else if (message.is_streaming &&
                (message.text.empty() || !generation_settings_.stream_tokens)) {
-      BuildLabel(column, "Writing…", body_font_.get(), palette_.text_tertiary);
+      BuildLabel(group, "Writing…", body_font_.get(), palette_.text_tertiary);
     } else {
-      BuildMarkdown(column, message.text);
+      BuildMarkdown(group, message.text);
     }
+    BuildMessageActions(group, index,
+                        index + 1 == conversation.messages.size());
   }
+}
+
+void App::BuildMessageActions(ui::Node* parent, size_t message_index,
+                              bool is_last_message) {
+  const std::vector<ChatMessage>& messages =
+      conversations_[active_conversation_index_].messages;
+  const ChatMessage& message = messages[message_index];
+  if (message.is_streaming) return;
+  const bool is_user = message.role == MessageRole::kUser;
+  const bool is_last_user_message =
+      is_user && std::none_of(messages.begin() + message_index + 1,
+                              messages.end(), [](const ChatMessage& later) {
+                                return later.role == MessageRole::kUser;
+                              });
+  const bool shows_edit = is_last_user_message && !generating_;
+  const bool shows_copy = !is_user && !message.is_notice;
+  const bool shows_regenerate = !is_user && is_last_message && !generating_;
+  if (!shows_edit && !shows_copy && !shows_regenerate) return;
+
+  ui::Node* actions = parent->AddChild();
+  MakeRow(actions->yoga_node());
+  YGNodeStyleSetGap(actions->yoga_node(), YGGutterColumn, theme::Spacing(2));
+  YGNodeStyleSetJustifyContent(actions->yoga_node(),
+                               is_user ? YGJustifyFlexEnd : YGJustifyFlexStart);
+  YGNodeStyleSetMargin(actions->yoga_node(), YGEdgeLeft,
+                       is_user ? 0 : -theme::Spacing(1));
+  if (shows_edit) {
+    BuildTextButton(actions, "edit-message", "Edit", ButtonStyle::kQuiet);
+  }
+  if (shows_copy) {
+    BuildCopyButton(actions, std::string(kCopyMessageIdPrefix) +
+                                 std::to_string(message_index));
+  }
+  if (shows_regenerate) {
+    BuildTextButton(actions, "regenerate",
+                    message.is_notice ? "Try again" : "Regenerate",
+                    ButtonStyle::kQuiet);
+  }
+}
+
+ui::Node* App::BuildCopyButton(ui::Node* parent, std::string id) {
+  const bool copied = copied_button_id_ == id;
+  return BuildTextButton(parent, std::move(id), copied ? "Copied" : "Copy",
+                         ButtonStyle::kQuiet);
 }
 
 ui::Node* App::BuildRichText(ui::Node* parent,
@@ -955,10 +1061,18 @@ void App::BuildMarkdownBlock(ui::Node* parent, const ui::MarkdownBlock& block) {
       box->style().background = palette_.component_background;
       box->style().border = palette_.border;
       box->style().border_width = 1;
-      if (!block.language.empty()) {
-        BuildLabel(box, block.language, monospace_caption_font_.get(),
-                   palette_.text_tertiary);
-      }
+      ui::Node* header = box->AddChild();
+      MakeRow(header->yoga_node());
+      YGNodeStyleSetJustifyContent(header->yoga_node(), YGJustifySpaceBetween);
+      YGNodeStyleSetMargin(header->yoga_node(), YGEdgeVertical,
+                           -theme::Spacing(1));
+      YGNodeStyleSetMargin(header->yoga_node(), YGEdgeRight,
+                           -theme::Spacing(1.5f));
+      BuildLabel(header, block.language, monospace_caption_font_.get(),
+                 palette_.text_tertiary);
+      BuildCopyButton(header, std::string(kCopyCodeIdPrefix) +
+                                  std::to_string(copyable_code_blocks_.size()));
+      copyable_code_blocks_.push_back(block.code);
       BuildLabel(box, block.code.empty() ? " " : block.code,
                  monospace_body_font_.get(), palette_.text_primary, true);
       return;
@@ -1543,11 +1657,40 @@ void App::BuildToggleRow(ui::Node* card, std::string_view label,
 }
 
 bool App::IsTextField(std::string_view node_id) const {
-  return node_id == kComposerFieldId || node_id == kSystemPromptFieldId;
+  return node_id == kComposerFieldId || node_id == kSystemPromptFieldId ||
+         node_id == kRenameFieldId;
 }
 
 void App::HandleClick(const std::string& node_id) {
-  if (node_id == kMinimizeButtonId) {
+  const bool delete_was_pending = delete_confirmation_pending_;
+  delete_confirmation_pending_ = false;
+  if (node_id == "rename") {
+    StartRenamingConversation();
+  } else if (node_id == "rename-save") {
+    FinishRenamingConversation(true);
+  } else if (node_id == "rename-cancel") {
+    FinishRenamingConversation(false);
+  } else if (node_id == "delete") {
+    if (delete_was_pending) {
+      DeleteActiveConversation();
+    } else {
+      delete_confirmation_pending_ = true;
+    }
+  } else if (node_id == "regenerate") {
+    RegenerateLastReply();
+  } else if (node_id == "edit-message") {
+    EditLastUserMessage();
+  } else if (StartsWith(node_id, kCopyMessageIdPrefix)) {
+    const size_t index =
+        std::stoul(node_id.substr(kCopyMessageIdPrefix.size()));
+    const auto& messages = conversations_[active_conversation_index_].messages;
+    if (index < messages.size()) CopyToClipboard(messages[index].text, node_id);
+  } else if (StartsWith(node_id, kCopyCodeIdPrefix)) {
+    const size_t index = std::stoul(node_id.substr(kCopyCodeIdPrefix.size()));
+    if (index < copyable_code_blocks_.size()) {
+      CopyToClipboard(copyable_code_blocks_[index], node_id);
+    }
+  } else if (node_id == kMinimizeButtonId) {
     window_.Minimize();
   } else if (node_id == kMaximizeButtonId) {
     window_.ToggleMaximize();
@@ -1558,6 +1701,7 @@ void App::HandleClick(const std::string& node_id) {
   } else if (StartsWith(node_id, kConversationIdPrefix)) {
     size_t index = std::stoul(node_id.substr(kConversationIdPrefix.size()));
     if (index < conversations_.size()) {
+      FinishRenamingConversation(true);
       active_conversation_index_ = index;
       message_scroll_pinned_to_bottom_ = true;
     }
@@ -1697,6 +1841,11 @@ void App::SendComposerMessage() {
   composer_history_.Clear();
   message_scroll_pinned_to_bottom_ = true;
   SaveConversationHistory();
+  GenerateReply(&conversation);
+}
+
+void App::GenerateReply(Conversation* conversation_pointer) {
+  Conversation& conversation = *conversation_pointer;
   if (!ModelLoaded()) {
     conversation.messages.push_back(
         {MessageRole::kAssistant,
@@ -1731,7 +1880,95 @@ void App::SendComposerMessage() {
   inference_engine_->Generate(std::move(prompt), sampling);
 }
 
+void App::RegenerateLastReply() {
+  if (generating_) return;
+  Conversation& conversation = conversations_[active_conversation_index_];
+  std::vector<ChatMessage>& messages = conversation.messages;
+  while (!messages.empty() && messages.back().role != MessageRole::kUser) {
+    messages.pop_back();
+  }
+  if (messages.empty()) return;
+  message_scroll_pinned_to_bottom_ = true;
+  SaveConversationHistory();
+  GenerateReply(&conversation);
+}
+
+void App::EditLastUserMessage() {
+  if (generating_) return;
+  std::vector<ChatMessage>& messages =
+      conversations_[active_conversation_index_].messages;
+  auto last_user = std::find_if(messages.rbegin(), messages.rend(),
+                                [](const ChatMessage& message) {
+                                  return message.role == MessageRole::kUser;
+                                });
+  if (last_user == messages.rend()) return;
+  composer_history_.Record(composer_text_, composer_selection_, false);
+  composer_text_ = last_user->text;
+  composer_selection_ = {composer_text_.size(), composer_text_.size()};
+  messages.erase(std::prev(last_user.base()), messages.end());
+  focused_field_id_ = std::string(kComposerFieldId);
+  message_scroll_pinned_to_bottom_ = true;
+  SaveConversationHistory();
+  ResetCaretBlink();
+}
+
+void App::StartRenamingConversation() {
+  rename_text_ = conversations_[active_conversation_index_].title;
+  rename_selection_ = {rename_text_.size(), 0};
+  rename_history_.Clear();
+  renaming_conversation_ = true;
+  focused_field_id_ = std::string(kRenameFieldId);
+  ResetCaretBlink();
+}
+
+void App::FinishRenamingConversation(bool keep_changes) {
+  if (!renaming_conversation_) return;
+  renaming_conversation_ = false;
+  if (focused_field_id_ == kRenameFieldId) {
+    focused_field_id_ = std::string(kComposerFieldId);
+  }
+  std::string new_title = TrimWhitespace(rename_text_);
+  std::replace(new_title.begin(), new_title.end(), '\n', ' ');
+  if (!keep_changes || new_title.empty()) return;
+  conversations_[active_conversation_index_].title = std::move(new_title);
+  SaveConversationHistory();
+}
+
+void App::DeleteActiveConversation() {
+  if (generating_ &&
+      generating_conversation_index_ == active_conversation_index_) {
+    return;
+  }
+  conversations_.erase(conversations_.begin() + active_conversation_index_);
+  if (generating_ &&
+      generating_conversation_index_ > active_conversation_index_) {
+    --generating_conversation_index_;
+  }
+  const bool has_empty_chat =
+      std::any_of(conversations_.begin(), conversations_.end(),
+                  [](const Conversation& conversation) {
+                    return conversation.messages.empty();
+                  });
+  if (!has_empty_chat) {
+    conversations_.insert(conversations_.begin(),
+                          Conversation{std::string(kNewConversationTitle), {}});
+    if (generating_) ++generating_conversation_index_;
+    active_conversation_index_ = 0;
+  } else {
+    active_conversation_index_ =
+        std::min(active_conversation_index_, conversations_.size() - 1);
+  }
+  message_scroll_pinned_to_bottom_ = true;
+  SaveConversationHistory();
+}
+
+void App::CopyToClipboard(std::string_view text, const std::string& button_id) {
+  window_.SetClipboardText(text);
+  copied_button_id_ = button_id;
+}
+
 void App::StartNewConversation() {
+  FinishRenamingConversation(true);
   const Conversation& active = conversations_[active_conversation_index_];
   if (!active.messages.empty()) {
     conversations_.insert(conversations_.begin(),
@@ -1772,6 +2009,7 @@ void App::OnMouseMove(float x, float y) {
   const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string hit_id = hit ? hit->id() : std::string();
   if (hit_id != hovered_node_id_) {
+    if (hit_id != copied_button_id_) copied_button_id_.clear();
     hovered_node_id_ = std::move(hit_id);
     Invalidate();
   }
@@ -1784,6 +2022,8 @@ std::optional<TextFieldEditor> App::FocusedEditor() {
   } else if (focused_field_id_ == kSystemPromptFieldId) {
     editor = {&generation_settings_.system_prompt, &system_prompt_selection_,
               &system_prompt_history_};
+  } else if (focused_field_id_ == kRenameFieldId && renaming_conversation_) {
+    editor = {&rename_text_, &rename_selection_, &rename_history_};
   } else {
     return std::nullopt;
   }
@@ -1918,6 +2158,8 @@ bool App::HandleEditingKey(UINT virtual_key, bool control_down,
     case VK_RETURN:
       if (focused_field_id_ == kComposerFieldId && !shift_down) {
         SendComposerMessage();
+      } else if (focused_field_id_ == kRenameFieldId) {
+        FinishRenamingConversation(true);
       } else {
         EditFocusedText("\n", false);
       }
@@ -1958,6 +2200,12 @@ void App::OnMouseDown(float x, float y, bool shift_down) {
   std::string hit_id = hit ? hit->id() : std::string();
   if (hit_id.ends_with(kTextNodeSuffix)) {
     hit_id.resize(hit_id.size() - kTextNodeSuffix.size());
+  }
+  const bool keeps_rename_open = hit_id == kRenameFieldId ||
+                                 hit_id == "rename-save" ||
+                                 hit_id == "rename-cancel";
+  if (renaming_conversation_ && !keeps_rename_open) {
+    FinishRenamingConversation(true);
   }
   if (IsTextField(hit_id)) {
     const bool extend = shift_down && focused_field_id_ == hit_id;
@@ -2027,7 +2275,10 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     return;
   }
   if (virtual_key == VK_ESCAPE) {
-    if (settings_page_open_ && focused_field_id_.empty()) {
+    delete_confirmation_pending_ = false;
+    if (renaming_conversation_) {
+      FinishRenamingConversation(false);
+    } else if (settings_page_open_ && focused_field_id_.empty()) {
       CloseSettings();
     } else {
       focused_field_id_.clear();

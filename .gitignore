@@ -1,0 +1,22 @@
+# Build output
+/build/
+/out/
+
+# IDE and tooling
+.vs/
+.vscode/
+.idea/
+.cache/
+CMakeUserPresets.json
+compile_commands.json
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# MSVC artifacts
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.lib
+*.exp

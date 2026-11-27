@@ -47,6 +47,9 @@ struct Palette {
   ui::Color text_on_close_button;
   ui::Color success_indicator;
 
+  ui::Color glass_fill;
+  ui::Color glass_border;
+
   ui::Color toggle_off;
   ui::Color toggle_knob;
 
@@ -76,6 +79,8 @@ inline constexpr float kComposerMaximumTextHeight = 200;
 inline constexpr float kListMarkerWidth = 20;
 inline constexpr float kQuoteBarWidth = 3;
 inline constexpr float kWheelScrollDistance = 56;
+
+inline constexpr float kGlassBlur = 24;
 
 inline constexpr float kBaseCornerRadius = 6;
 inline constexpr float kRaisedCornerRadius = 12;

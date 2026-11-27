@@ -456,6 +456,15 @@ void App::RenderFrame() {
   needs_render_ = false;
   interface_root_ = BuildInterface();
   LayoutInterface(interface_root_.get());
+  const float measured_dock_height =
+      composer_dock_node_
+          ? YGNodeLayoutGetHeight(composer_dock_node_->yoga_node())
+          : 0;
+  if (std::abs(measured_dock_height - composer_dock_height_) > 0.5f) {
+    composer_dock_height_ = measured_dock_height;
+    interface_root_ = BuildInterface();
+    LayoutInterface(interface_root_.get());
+  }
   renderer_.Resize(window_.client_width(), window_.client_height());
   renderer_.Render(*interface_root_, caret_visible_, device_pixels_per_point_);
   presenter_.Present(renderer_.pixels(), renderer_.width(), renderer_.height());
@@ -500,6 +509,7 @@ ui::Color App::InteractiveFill(std::string_view node_id, ui::Color resting,
 std::unique_ptr<ui::Node> App::BuildInterface() {
   copyable_code_blocks_.clear();
   selectable_texts_.clear();
+  composer_dock_node_ = nullptr;
   auto root = std::make_unique<ui::Node>();
   root->style().background = palette_.background_primary;
   BuildTitleBar(root.get());
@@ -1030,7 +1040,7 @@ void App::BuildMessageList(ui::Node* parent) {
     YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeLeft, 0);
     YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeRight, 0);
     YGNodeStyleSetPosition(jump_holder->yoga_node(), YGEdgeBottom,
-                           theme::Spacing(3));
+                           composer_dock_height_ + theme::Spacing(3));
     YGNodeStyleSetAlignItems(jump_holder->yoga_node(), YGAlignCenter);
     ui::Node* jump_button =
         BuildTextButton(jump_holder, "jump-to-latest", "Jump to latest",
@@ -1044,8 +1054,9 @@ void App::BuildMessageList(ui::Node* parent) {
   YGNodeStyleSetFlexShrink(content->yoga_node(), 0);
   YGNodeStyleSetFlexGrow(content->yoga_node(), 1);
   YGNodeStyleSetAlignItems(content->yoga_node(), YGAlignCenter);
-  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeVertical,
-                        theme::Spacing(8));
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeTop, theme::Spacing(8));
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeBottom,
+                        composer_dock_height_ + theme::Spacing(4));
   if (conversation.messages.empty()) {
     YGNodeStyleSetJustifyContent(content->yoga_node(), YGJustifyCenter);
     BuildEmptyState(content);
@@ -1473,7 +1484,11 @@ void App::BuildEmptyState(ui::Node* parent) {
 void App::BuildComposer(ui::Node* parent) {
   const bool composer_focused = focused_field_id_ == kComposerFieldId;
   ui::Node* dock = parent->AddChild();
-  YGNodeStyleSetFlexShrink(dock->yoga_node(), 0);
+  composer_dock_node_ = dock;
+  YGNodeStyleSetPositionType(dock->yoga_node(), YGPositionTypeAbsolute);
+  YGNodeStyleSetPosition(dock->yoga_node(), YGEdgeLeft, 0);
+  YGNodeStyleSetPosition(dock->yoga_node(), YGEdgeRight, 0);
+  YGNodeStyleSetPosition(dock->yoga_node(), YGEdgeBottom, 0);
   YGNodeStyleSetAlignItems(dock->yoga_node(), YGAlignCenter);
   YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeHorizontal, theme::Spacing(6));
   YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeTop, theme::Spacing(2));
@@ -1488,9 +1503,10 @@ void App::BuildComposer(ui::Node* parent) {
   YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeLeft, theme::Spacing(4));
   YGNodeStyleSetGap(field_box->yoga_node(), YGGutterRow, theme::Spacing(2));
   field_box->style().corner_radius = theme::kRaisedCornerRadius;
-  field_box->style().background = palette_.background_primary;
+  field_box->style().background = palette_.glass_fill;
+  field_box->style().backdrop_blur = theme::kGlassBlur;
   field_box->style().border =
-      composer_focused ? palette_.border_focus : palette_.border;
+      composer_focused ? palette_.border_focus : palette_.glass_border;
   field_box->style().border_width = 1;
   field_box->style().shadows = palette_.shadow_large;
   if (composer_focused) {

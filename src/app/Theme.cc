@@ -54,6 +54,8 @@ Palette MakeDarkPalette() {
   palette.close_button_pressed = Opaque(0xC93C41);
   palette.text_on_close_button = Opaque(0xFFFFFF);
   palette.success_indicator = Opaque(0x45A557);
+  palette.glass_fill = Translucent(0xFFFFFF, 0x14);
+  palette.glass_border = Translucent(0xFFFFFF, 0x2E);
   palette.toggle_off = Opaque(0x454545);
   palette.toggle_knob = Opaque(0xFFFFFF);
   palette.shadow_small = {MakeShadow(1, 2, 0, 0x29)};
@@ -97,6 +99,8 @@ Palette MakeLightPalette() {
   palette.close_button_pressed = Opaque(0xC93C41);
   palette.text_on_close_button = Opaque(0xFFFFFF);
   palette.success_indicator = Opaque(0x45A557);
+  palette.glass_fill = Translucent(0xFFFFFF, 0xB8);
+  palette.glass_border = Translucent(0x000000, 0x14);
   palette.toggle_off = Opaque(0xC9C9C9);
   palette.toggle_knob = Opaque(0xFFFFFF);
   palette.shadow_small = {MakeShadow(2, 2, 0, 0x0A)};

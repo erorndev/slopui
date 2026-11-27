@@ -258,6 +258,8 @@ class App : public WindowHandler {
   MessageTextPoint message_selection_anchor_;
   MessageTextPoint message_selection_focus_;
   bool dragging_message_selection_ = false;
+  ui::Node* composer_dock_node_ = nullptr;
+  float composer_dock_height_ = 0;
   bool dragging_text_selection_ = false;
   float preferred_caret_x_ = -1;
   bool window_active_ = true;

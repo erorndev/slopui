@@ -17,6 +17,82 @@ constexpr float kCaretWidth = 1.5f;
 
 bool IsVisible(const Color& color) { return color.alpha > 0; }
 
+void BoxBlurLine(const uint32_t* source, uint32_t* destination, int length,
+                 int destination_stride, int radius) {
+  const int window = 2 * radius + 1;
+  int sums[4] = {};
+  auto channel = [](uint32_t pixel, int index) {
+    return static_cast<int>((pixel >> (index * 8)) & 0xFF);
+  };
+  auto sample = [&](int position) {
+    return source[static_cast<size_t>(std::clamp(position, 0, length - 1))];
+  };
+  for (int offset = -radius; offset <= radius; ++offset) {
+    const uint32_t pixel = sample(offset);
+    for (int index = 0; index < 4; ++index)
+      sums[index] += channel(pixel, index);
+  }
+  for (int position = 0; position < length; ++position) {
+    uint32_t blurred = 0;
+    for (int index = 0; index < 4; ++index) {
+      blurred |= static_cast<uint32_t>(sums[index] / window) << (index * 8);
+    }
+    destination[static_cast<size_t>(position) * destination_stride] = blurred;
+    const uint32_t leaving = sample(position - radius);
+    const uint32_t entering = sample(position + radius + 1);
+    for (int index = 0; index < 4; ++index) {
+      sums[index] += channel(entering, index) - channel(leaving, index);
+    }
+  }
+}
+
+void BoxBlurRows(std::vector<uint32_t>* region, int width, int height,
+                 int radius) {
+  std::vector<uint32_t> line(static_cast<size_t>(width));
+  for (int row = 0; row < height; ++row) {
+    uint32_t* row_start = region->data() + static_cast<size_t>(row) * width;
+    std::copy_n(row_start, width, line.data());
+    BoxBlurLine(line.data(), row_start, width, 1, radius);
+  }
+}
+
+void BoxBlurColumns(std::vector<uint32_t>* region, int width, int height,
+                    int radius) {
+  std::vector<uint32_t> line(static_cast<size_t>(height));
+  for (int column = 0; column < width; ++column) {
+    for (int row = 0; row < height; ++row) {
+      line[static_cast<size_t>(row)] =
+          (*region)[static_cast<size_t>(row) * width + column];
+    }
+    BoxBlurLine(line.data(), region->data() + column, height, width, radius);
+  }
+}
+
+uint32_t BlendOver(uint32_t source, uint32_t destination) {
+  const uint32_t source_alpha = source >> 24;
+  if (source_alpha == 255) return source;
+  if (source_alpha == 0) return destination;
+  const uint32_t remaining = 255 - source_alpha;
+  uint32_t blended = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    const uint32_t source_channel = (source >> shift) & 0xFF;
+    const uint32_t destination_channel = (destination >> shift) & 0xFF;
+    const uint32_t channel = std::min<uint32_t>(
+        255, source_channel + (destination_channel * remaining + 127) / 255);
+    blended |= channel << shift;
+  }
+  return blended;
+}
+
+bool InsideRoundedRect(float x, float y, float width, float height,
+                       float corner_radius) {
+  const float nearest_x = std::clamp(x, corner_radius, width - corner_radius);
+  const float nearest_y = std::clamp(y, corner_radius, height - corner_radius);
+  const float delta_x = x - nearest_x;
+  const float delta_y = y - nearest_y;
+  return delta_x * delta_x + delta_y * delta_y <= corner_radius * corner_radius;
+}
+
 tvg::Shape* MakeRoundedRect(const Rect& rect, float corner_radius) {
   tvg::Shape* shape = tvg::Shape::gen();
   shape->appendRect(rect.x, rect.y, rect.width, rect.height, corner_radius,
@@ -303,19 +379,148 @@ void Renderer::Render(const Node& root, bool caret_visible,
   canvas_->remove();
   tvg::Scene* root_scene = tvg::Scene::gen();
   root_scene->scale(device_pixels_per_point);
-  DrawNode(root, root_scene, caret_visible);
+  const Node* backdrop_node = FindBackdropNode(root);
+  if (!backdrop_node) {
+    DrawNode(root, root_scene, caret_visible);
+    canvas_->add(root_scene);
+    canvas_->draw(true);
+    canvas_->sync();
+    return;
+  }
+  DrawNodesBefore(root, *backdrop_node, root_scene);
   canvas_->add(root_scene);
   canvas_->draw(true);
   canvas_->sync();
+  BlurBehind(*backdrop_node, device_pixels_per_point);
+  backdrop_pixels_ = pixels_;
+  canvas_->remove();
+  tvg::Scene* overlay_scene = tvg::Scene::gen();
+  overlay_scene->scale(device_pixels_per_point);
+  bool reached = false;
+  DrawNodesFrom(root, *backdrop_node, overlay_scene, caret_visible, &reached);
+  canvas_->add(overlay_scene);
+  canvas_->draw(true);
+  canvas_->sync();
+  for (size_t index = 0; index < pixels_.size(); ++index) {
+    pixels_[index] = BlendOver(pixels_[index], backdrop_pixels_[index]);
+  }
 }
 
 void Renderer::DrawNode(const Node& node, tvg::Scene* target_scene,
                         bool caret_visible) {
-  const NodeStyle& style = node.style();
   const Rect& bounds = node.bounds();
   if (bounds.width <= 0 || bounds.height <= 0) return;
   if (node.visible_clip().Intersect(bounds).height <= 0) return;
+  DrawNodeContents(node, target_scene, caret_visible);
+  tvg::Scene* children_scene = target_scene;
+  if (node.style().scrolls_vertically) {
+    children_scene = tvg::Scene::gen();
+    children_scene->clip(MakeRoundedRect(bounds, 0));
+    target_scene->add(children_scene);
+  }
+  for (const auto& child : node.children()) {
+    DrawNode(*child, children_scene, caret_visible);
+  }
+}
 
+bool Renderer::DrawNodesBefore(const Node& node, const Node& stop_node,
+                               tvg::Scene* target_scene) {
+  if (&node == &stop_node) return true;
+  const Rect& bounds = node.bounds();
+  if (bounds.width <= 0 || bounds.height <= 0) return false;
+  if (node.visible_clip().Intersect(bounds).height <= 0) return false;
+  DrawNodeContents(node, target_scene, false);
+  tvg::Scene* children_scene = target_scene;
+  if (node.style().scrolls_vertically) {
+    children_scene = tvg::Scene::gen();
+    children_scene->clip(MakeRoundedRect(bounds, 0));
+    target_scene->add(children_scene);
+  }
+  for (const auto& child : node.children()) {
+    if (DrawNodesBefore(*child, stop_node, children_scene)) return true;
+  }
+  return false;
+}
+
+void Renderer::DrawNodesFrom(const Node& node, const Node& start_node,
+                             tvg::Scene* target_scene, bool caret_visible,
+                             bool* reached) {
+  if (*reached || &node == &start_node) {
+    *reached = true;
+    DrawNode(node, target_scene, caret_visible);
+    return;
+  }
+  const Rect& bounds = node.bounds();
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+  tvg::Scene* children_scene = target_scene;
+  if (node.style().scrolls_vertically) {
+    children_scene = tvg::Scene::gen();
+    children_scene->clip(MakeRoundedRect(bounds, 0));
+    target_scene->add(children_scene);
+  }
+  for (const auto& child : node.children()) {
+    DrawNodesFrom(*child, start_node, children_scene, caret_visible, reached);
+  }
+}
+
+void Renderer::BlurBehind(const Node& node, float device_pixels_per_point) {
+  const NodeStyle& style = node.style();
+  const Rect& bounds = node.bounds();
+  const int left = std::max(
+      0, static_cast<int>(std::floor(bounds.x * device_pixels_per_point)));
+  const int top = std::max(
+      0, static_cast<int>(std::floor(bounds.y * device_pixels_per_point)));
+  const int right =
+      std::min(width_, static_cast<int>(std::ceil((bounds.x + bounds.width) *
+                                                  device_pixels_per_point)));
+  const int bottom =
+      std::min(height_, static_cast<int>(std::ceil((bounds.y + bounds.height) *
+                                                   device_pixels_per_point)));
+  if (right <= left || bottom <= top) return;
+  const int radius = std::max(
+      1, static_cast<int>(style.backdrop_blur / 2 * device_pixels_per_point));
+  const int region_width = right - left;
+  const int region_height = bottom - top;
+  std::vector<uint32_t> region(static_cast<size_t>(region_width) *
+                               static_cast<size_t>(region_height));
+  for (int row = 0; row < region_height; ++row) {
+    std::copy_n(&pixels_[static_cast<size_t>(top + row) * width_ + left],
+                region_width, &region[static_cast<size_t>(row) * region_width]);
+  }
+  constexpr int kBoxBlurPasses = 3;
+  for (int pass = 0; pass < kBoxBlurPasses; ++pass) {
+    BoxBlurRows(&region, region_width, region_height, radius);
+    BoxBlurColumns(&region, region_width, region_height, radius);
+  }
+  const float corner_radius = style.corner_radius * device_pixels_per_point;
+  for (int row = 0; row < region_height; ++row) {
+    for (int column = 0; column < region_width; ++column) {
+      if (!InsideRoundedRect(
+              column + 0.5f, row + 0.5f, static_cast<float>(region_width),
+              static_cast<float>(region_height), corner_radius)) {
+        continue;
+      }
+      pixels_[static_cast<size_t>(top + row) * width_ + left + column] =
+          region[static_cast<size_t>(row) * region_width + column];
+    }
+  }
+}
+
+const Node* Renderer::FindBackdropNode(const Node& node) {
+  if (node.style().backdrop_blur > 0 && node.bounds().width > 0 &&
+      node.bounds().height > 0) {
+    return &node;
+  }
+  for (const auto& child : node.children()) {
+    if (const Node* found = FindBackdropNode(*child)) return found;
+  }
+  return nullptr;
+}
+
+void Renderer::DrawNodeContents(const Node& node, tvg::Scene* target_scene,
+                                bool caret_visible) {
+  const NodeStyle& style = node.style();
+  const Rect& bounds = node.bounds();
   if (!style.shadows.empty()) DrawShadows(style, bounds, target_scene);
   if (IsVisible(style.outer_ring) && style.outer_ring_width > 0) {
     DrawOuterRing(style, bounds, target_scene);
@@ -344,16 +549,6 @@ void Renderer::DrawNode(const Node& node, tvg::Scene* target_scene,
     DrawText(node, target_scene, caret_visible);
   }
   if (style.icon != IconKind::kNone) DrawIcon(style, bounds, target_scene);
-
-  tvg::Scene* children_scene = target_scene;
-  if (style.scrolls_vertically) {
-    children_scene = tvg::Scene::gen();
-    children_scene->clip(MakeRoundedRect(bounds, 0));
-    target_scene->add(children_scene);
-  }
-  for (const auto& child : node.children()) {
-    DrawNode(*child, children_scene, caret_visible);
-  }
 }
 
 void Renderer::DrawText(const Node& node, tvg::Scene* target_scene,

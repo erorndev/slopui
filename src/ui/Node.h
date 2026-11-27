@@ -67,6 +67,7 @@ struct NodeStyle {
   bool elides_text = false;
   bool shows_caret = false;
   size_t caret_byte = std::string::npos;
+  float backdrop_blur = 0;
   size_t selection_begin = 0;
   size_t selection_end = 0;
   Color selection_color;

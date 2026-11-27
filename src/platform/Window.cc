@@ -1,5 +1,6 @@
 #include "platform/Window.h"
 
+#include <dwmapi.h>
 #include <windowsx.h>
 
 #include <cwchar>
@@ -81,6 +82,12 @@ void Window::OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
 }
 
 void Window::Close() { DestroyWindow(hwnd_); }
+
+void Window::UseDarkTitleBar(bool dark_title_bar) {
+  BOOL immersive_dark_mode = dark_title_bar ? TRUE : FALSE;
+  DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &immersive_dark_mode, sizeof(immersive_dark_mode));
+}
 
 std::string Window::ClipboardText() const {
   std::string clipboard_text;
@@ -167,9 +174,24 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       return 0;
     case WM_LBUTTONDOWN:
       SetFocus(hwnd_);
+      SetCapture(hwnd_);
       handler_->OnMouseDown(static_cast<float>(GET_X_LPARAM(lparam)),
                             static_cast<float>(GET_Y_LPARAM(lparam)));
       return 0;
+    case WM_LBUTTONUP:
+      ReleaseCapture();
+      handler_->OnMouseUp(static_cast<float>(GET_X_LPARAM(lparam)),
+                          static_cast<float>(GET_Y_LPARAM(lparam)));
+      return 0;
+    case WM_SETTINGCHANGE:
+      if (lparam && std::wcscmp(reinterpret_cast<const wchar_t*>(lparam),
+                                L"ImmersiveColorSet") == 0) {
+        handler_->OnSystemAppearanceChanged();
+      }
+      break;
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
+      handler_->OnSystemAppearanceChanged();
+      break;
     case WM_MOUSEWHEEL: {
       POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       ScreenToClient(hwnd_, &cursor);

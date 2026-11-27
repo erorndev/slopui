@@ -23,6 +23,8 @@ class WindowHandler {
   virtual void OnMouseMove(float x, float y) = 0;
   virtual void OnMouseLeave() = 0;
   virtual void OnMouseDown(float x, float y) = 0;
+  virtual void OnMouseUp(float x, float y) = 0;
+  virtual void OnSystemAppearanceChanged() = 0;
   virtual void OnMouseWheel(float x, float y, float wheel_steps) = 0;
   virtual void OnText(const std::string& utf8_text) = 0;
   virtual void OnKey(UINT virtual_key, bool control_down, bool shift_down) = 0;
@@ -38,6 +40,7 @@ class Window {
   void OverrideDotsPerInch(UINT dots_per_inch, int logical_client_width,
                            int logical_client_height);
   void Close();
+  void UseDarkTitleBar(bool dark_title_bar);
   HWND hwnd() const { return hwnd_; }
   int client_width() const { return client_width_; }
   int client_height() const { return client_height_; }

@@ -43,10 +43,23 @@ void DrawIcon(const NodeStyle& style, const Rect& bounds,
       icon->moveTo(center_x + kIconHalfExtent, center_y - kIconHalfExtent);
       icon->lineTo(center_x - kIconHalfExtent, center_y + kIconHalfExtent);
       break;
+    case IconKind::kArrowUp:
+      icon->moveTo(center_x, center_y + kIconHalfExtent + 1);
+      icon->lineTo(center_x, center_y - kIconHalfExtent - 1);
+      icon->moveTo(center_x - kIconHalfExtent, center_y - 1);
+      icon->lineTo(center_x, center_y - kIconHalfExtent - 1);
+      icon->lineTo(center_x + kIconHalfExtent, center_y - 1);
+      break;
+    case IconKind::kChevronDown:
+      icon->moveTo(center_x - kIconHalfExtent + 1, center_y - 2);
+      icon->lineTo(center_x, center_y + 2.5f);
+      icon->lineTo(center_x + kIconHalfExtent - 1, center_y - 2);
+      break;
     case IconKind::kNone:
       tvg::Paint::rel(icon);
       return;
   }
+  icon->strokeJoin(tvg::StrokeJoin::Round);
   icon->strokeWidth(kIconStrokeWidth);
   icon->strokeCap(tvg::StrokeCap::Round);
   icon->strokeFill(style.icon_color.red, style.icon_color.green,

@@ -4,8 +4,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
-#include "app/Theme.h"
+#include "platform/SystemAppearance.h"
 
 namespace lale {
 
@@ -19,9 +20,9 @@ constexpr std::string_view kConversationIdPrefix = "conversation:";
 constexpr std::string_view kStepperIdPrefix = "stepper:";
 constexpr std::string_view kToggleIdPrefix = "toggle:";
 constexpr std::string_view kNewConversationTitle = "New chat";
-constexpr std::string_view kNoModelReply =
-    "No model is loaded yet. Open Settings to choose a GGUF model. Replies "
-    "will appear here once the llama.cpp backend is connected.";
+constexpr std::string_view kNoModelNotice =
+    "No model is loaded, so there is no reply yet. Choose a GGUF model in "
+    "Settings once the llama.cpp backend is connected.";
 
 constexpr int kInitialLogicalWidth = 1280;
 constexpr int kInitialLogicalHeight = 800;
@@ -37,6 +38,18 @@ UINT DotsPerInchOverrideFromEnvironment() {
              : 0;
 }
 
+void ApplyThemeOverrideFromEnvironment(SystemAppearance* appearance) {
+  char override_text[16] = {};
+  DWORD length = GetEnvironmentVariableA("LALE_THEME", override_text,
+                                         sizeof(override_text));
+  if (length == 0 || length >= sizeof(override_text)) return;
+  if (std::strcmp(override_text, "light") == 0) {
+    appearance->prefers_dark_mode = false;
+  } else if (std::strcmp(override_text, "dark") == 0) {
+    appearance->prefers_dark_mode = true;
+  }
+}
+
 void SetPadding(YGNodeRef node, float horizontal, float vertical) {
   YGNodeStyleSetPadding(node, YGEdgeHorizontal, horizontal);
   YGNodeStyleSetPadding(node, YGEdgeVertical, vertical);
@@ -44,6 +57,7 @@ void SetPadding(YGNodeRef node, float horizontal, float vertical) {
 
 void MakeRow(YGNodeRef node) {
   YGNodeStyleSetFlexDirection(node, YGFlexDirectionRow);
+  YGNodeStyleSetAlignItems(node, YGAlignCenter);
 }
 
 void MakeScrollViewport(ui::Node* viewport, float scroll_offset) {
@@ -55,11 +69,12 @@ void MakeScrollViewport(ui::Node* viewport, float scroll_offset) {
   viewport->style().scroll_offset = scroll_offset;
 }
 
-void AddSeparator(ui::Node* parent) {
-  ui::Node* separator = parent->AddChild();
-  YGNodeStyleSetHeight(separator->yoga_node(), 1);
-  YGNodeStyleSetFlexShrink(separator->yoga_node(), 0);
-  separator->style().background = theme::kBorder;
+ui::Node* AddHairline(ui::Node* parent, ui::Color color) {
+  ui::Node* hairline = parent->AddChild();
+  YGNodeStyleSetHeight(hairline->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(hairline->yoga_node(), 0);
+  hairline->style().background = color;
+  return hairline;
 }
 
 bool StartsWith(std::string_view text, std::string_view prefix) {
@@ -118,16 +133,15 @@ void ClampScrollViewport(ui::Node* root, std::string_view viewport_id,
   viewport->style().scroll_offset = *scroll_offset;
 }
 
+std::string FileNameFromPath(const std::string& path) {
+  size_t separator = path.find_last_of("/\\");
+  return separator == std::string::npos ? path : path.substr(separator + 1);
+}
+
 }
 
 App::App() {
-  Conversation welcome_conversation;
-  welcome_conversation.title = "Getting started";
-  welcome_conversation.messages.push_back(
-      {MessageRole::kAssistant,
-       "Welcome to Lale. Choose a GGUF model in Settings, then type below. "
-       "Press Enter to send and Shift+Enter for a new line."});
-  conversations_.push_back(std::move(welcome_conversation));
+  conversations_.push_back({std::string(kNewConversationTitle), {}});
 }
 
 App::~App() = default;
@@ -138,6 +152,7 @@ bool App::Initialize(int show_command) {
                       this)) {
     return false;
   }
+  ApplySystemAppearance();
   OnDpiChanged(window_.dots_per_inch());
   if (!presenter_.Initialize(window_.hwnd(), window_.client_width(),
                              window_.client_height())) {
@@ -147,6 +162,7 @@ bool App::Initialize(int show_command) {
     window_.OverrideDotsPerInch(override_dots_per_inch, kInitialLogicalWidth,
                                 kInitialLogicalHeight);
   }
+  focused_field_id_ = std::string(kComposerFieldId);
   RenderFrame();
   window_.Show(show_command);
   return true;
@@ -174,14 +190,26 @@ void App::LoadFonts() {
   std::string semibold_font_key =
       ui::LoadFontFile(WindowsFontPath("seguisb.ttf"));
   if (semibold_font_key.empty()) semibold_font_key = regular_font_key;
+  caption_font_ =
+      std::make_unique<ui::Font>(regular_font_key, theme::kCaptionPointSize);
+  caption_strong_font_ =
+      std::make_unique<ui::Font>(semibold_font_key, theme::kCaptionPointSize);
   body_font_ =
       std::make_unique<ui::Font>(regular_font_key, theme::kBodyPointSize);
   body_strong_font_ =
       std::make_unique<ui::Font>(semibold_font_key, theme::kBodyPointSize);
-  small_font_ =
-      std::make_unique<ui::Font>(regular_font_key, theme::kSmallPointSize);
+  headline_font_ =
+      std::make_unique<ui::Font>(semibold_font_key, theme::kHeadlinePointSize);
   title_font_ =
       std::make_unique<ui::Font>(semibold_font_key, theme::kTitlePointSize);
+}
+
+void App::ApplySystemAppearance() {
+  SystemAppearance appearance = ReadSystemAppearance();
+  ApplyThemeOverrideFromEnvironment(&appearance);
+  palette_ = theme::MakePalette(appearance);
+  window_.UseDarkTitleBar(palette_.is_dark);
+  Invalidate();
 }
 
 void App::Invalidate() { needs_render_ = true; }
@@ -228,10 +256,18 @@ void App::LayoutInterface(ui::Node* root) {
   root->ResolveBounds(0, 0, {0, 0, client_width, client_height});
 }
 
+ui::Color App::InteractiveFill(std::string_view node_id, ui::Color resting,
+                               ui::Color hovered, ui::Color pressed) const {
+  if (node_id.empty()) return resting;
+  const bool is_hovered = hovered_node_id_ == node_id;
+  if (is_hovered && pressed_node_id_ == node_id) return pressed;
+  return is_hovered ? hovered : resting;
+}
+
 std::unique_ptr<ui::Node> App::BuildInterface() {
   auto root = std::make_unique<ui::Node>();
-  MakeRow(root->yoga_node());
-  root->style().background = theme::kAppBackground;
+  YGNodeStyleSetFlexDirection(root->yoga_node(), YGFlexDirectionRow);
+  root->style().background = palette_.window_background;
   const bool sidebar_fits_beside_settings =
       LogicalClientWidth() >= theme::kSidebarWidth +
                                   theme::kSettingsPanelWidth +
@@ -256,45 +292,108 @@ ui::Node* App::BuildLabel(ui::Node* parent, std::string text,
   return label;
 }
 
+ui::Node* App::BuildIcon(ui::Node* parent, ui::IconKind icon, ui::Color color,
+                         float size) {
+  ui::Node* icon_node = parent->AddChild();
+  YGNodeStyleSetWidth(icon_node->yoga_node(), size);
+  YGNodeStyleSetHeight(icon_node->yoga_node(), size);
+  YGNodeStyleSetFlexShrink(icon_node->yoga_node(), 0);
+  icon_node->style().icon = icon;
+  icon_node->style().icon_color = color;
+  return icon_node;
+}
+
 ui::Node* App::BuildIconButton(ui::Node* parent, std::string id,
-                               ui::IconKind icon) {
+                               ui::IconKind icon, float size) {
   const bool hovered = hovered_node_id_ == id;
-  ui::Node* button = parent->AddChild(std::move(id));
-  YGNodeStyleSetWidth(button->yoga_node(), 30);
-  YGNodeStyleSetHeight(button->yoga_node(), 30);
+  ui::Node* button = parent->AddChild(id);
+  YGNodeStyleSetWidth(button->yoga_node(), size);
+  YGNodeStyleSetHeight(button->yoga_node(), size);
   YGNodeStyleSetFlexShrink(button->yoga_node(), 0);
-  button->style().corner_radius = 8;
+  button->style().corner_radius = theme::kControlCornerRadius;
   button->style().cursor = CursorKind::kHand;
   button->style().background =
-      hovered ? theme::kHoverBackground : theme::kTransparent;
+      InteractiveFill(id, theme::kTransparent, palette_.control_hover,
+                      palette_.control_pressed);
   button->style().icon = icon;
   button->style().icon_color =
-      hovered ? theme::kTextPrimary : theme::kTextMuted;
+      hovered ? palette_.text_primary : palette_.text_secondary;
   return button;
 }
 
-ui::Node* App::BuildButton(ui::Node* parent, std::string id, std::string label,
-                           bool primary, bool enabled) {
-  const bool hovered = enabled && hovered_node_id_ == id;
-  ui::Node* button = parent->AddChild(enabled ? std::move(id) : std::string());
+ui::Node* App::BuildTextButton(ui::Node* parent, std::string id,
+                               std::string label, ButtonStyle style,
+                               bool enabled) {
+  ui::Node* button = parent->AddChild(enabled ? id : std::string());
   MakeRow(button->yoga_node());
-  YGNodeStyleSetAlignItems(button->yoga_node(), YGAlignCenter);
   YGNodeStyleSetJustifyContent(button->yoga_node(), YGJustifyCenter);
   YGNodeStyleSetFlexShrink(button->yoga_node(), 0);
-  SetPadding(button->yoga_node(), 12, 7);
-  button->style().corner_radius = 8;
+  YGNodeStyleSetHeight(button->yoga_node(), 32);
+  YGNodeStyleSetPadding(button->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(4));
+  button->style().corner_radius = theme::kControlCornerRadius;
   button->style().cursor = enabled ? CursorKind::kHand : CursorKind::kArrow;
-  if (primary) {
-    button->style().background = !enabled  ? theme::kAccentDisabled
-                                 : hovered ? theme::kAccentHover
-                                           : theme::kAccent;
-  } else {
-    button->style().background =
-        hovered ? theme::kHoverBackground : theme::kTransparent;
+  const std::string_view interactive_id = enabled ? id : std::string_view();
+
+  ui::Color text_color = palette_.text_primary;
+  switch (style) {
+    case ButtonStyle::kPrimary:
+      button->style().background =
+          enabled
+              ? InteractiveFill(interactive_id, palette_.accent,
+                                palette_.accent_hover, palette_.accent_pressed)
+              : palette_.accent_disabled;
+      text_color =
+          enabled ? palette_.text_on_accent : palette_.text_on_accent_disabled;
+      break;
+    case ButtonStyle::kSecondary:
+      button->style().background =
+          InteractiveFill(interactive_id, palette_.control_background,
+                          palette_.control_hover, palette_.control_pressed);
+      button->style().border = palette_.separator;
+      button->style().border_width = 1;
+      text_color = enabled ? palette_.text_primary : palette_.text_tertiary;
+      break;
+    case ButtonStyle::kPlain:
+      button->style().background =
+          InteractiveFill(interactive_id, theme::kTransparent,
+                          palette_.control_hover, palette_.control_pressed);
+      text_color = enabled ? palette_.accent : palette_.text_tertiary;
+      break;
   }
-  BuildLabel(button, std::move(label), body_font_.get(),
-             enabled ? theme::kTextPrimary : theme::kTextMuted);
+  BuildLabel(button, std::move(label), body_font_.get(), text_color);
   return button;
+}
+
+ui::Node* App::BuildSidebarRow(ui::Node* parent, std::string id,
+                               std::string label, ui::IconKind leading_icon,
+                               bool selected, std::string trailing_hint) {
+  ui::Node* row = parent->AddChild(id);
+  MakeRow(row->yoga_node());
+  YGNodeStyleSetHeight(row->yoga_node(), theme::kListRowHeight);
+  YGNodeStyleSetFlexShrink(row->yoga_node(), 0);
+  YGNodeStyleSetGap(row->yoga_node(), YGGutterColumn, theme::Spacing(2));
+  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeHorizontal, theme::Spacing(2));
+  row->style().corner_radius = theme::kControlCornerRadius;
+  row->style().cursor = CursorKind::kHand;
+  row->style().background =
+      selected
+          ? palette_.selected_background
+          : InteractiveFill(id, theme::kTransparent, palette_.control_hover,
+                            palette_.control_pressed);
+  if (leading_icon != ui::IconKind::kNone) {
+    BuildIcon(row, leading_icon, palette_.text_secondary, 16);
+  }
+  ui::Node* title = BuildLabel(row, std::move(label), body_font_.get(),
+                               palette_.text_primary);
+  YGNodeStyleSetFlexGrow(title->yoga_node(), 1);
+  YGNodeStyleSetFlexShrink(title->yoga_node(), 1);
+  title->style().elides_text = true;
+  if (!trailing_hint.empty()) {
+    BuildLabel(row, std::move(trailing_hint), caption_font_.get(),
+               palette_.text_tertiary);
+  }
+  return row;
 }
 
 void App::BuildSidebar(ui::Node* parent) {
@@ -302,54 +401,46 @@ void App::BuildSidebar(ui::Node* parent) {
   YGNodeRef sidebar_layout = sidebar->yoga_node();
   YGNodeStyleSetWidth(sidebar_layout, theme::kSidebarWidth);
   YGNodeStyleSetFlexShrink(sidebar_layout, 0);
-  YGNodeStyleSetPadding(sidebar_layout, YGEdgeAll, 12);
-  YGNodeStyleSetGap(sidebar_layout, YGGutterRow, 4);
-  sidebar->style().background = theme::kSidebarBackground;
+  YGNodeStyleSetPadding(sidebar_layout, YGEdgeHorizontal, theme::Spacing(3));
+  YGNodeStyleSetPadding(sidebar_layout, YGEdgeBottom, theme::Spacing(3));
+  YGNodeStyleSetGap(sidebar_layout, YGGutterRow, theme::Spacing(0.5f));
+  sidebar->style().background = palette_.sidebar_background;
 
   ui::Node* brand = sidebar->AddChild();
-  SetPadding(brand->yoga_node(), 10, 8);
-  BuildLabel(brand, "Lale", title_font_.get(), theme::kTextPrimary);
+  MakeRow(brand->yoga_node());
+  YGNodeStyleSetHeight(brand->yoga_node(), theme::kTopBarHeight);
+  YGNodeStyleSetFlexShrink(brand->yoga_node(), 0);
+  YGNodeStyleSetPadding(brand->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(2));
+  BuildLabel(brand, "Lale", headline_font_.get(), palette_.text_primary);
 
-  ui::Node* new_chat_button =
-      BuildButton(sidebar, "new-chat", "New chat", false);
-  YGNodeStyleSetJustifyContent(new_chat_button->yoga_node(),
-                               YGJustifyFlexStart);
-  YGNodeStyleSetMargin(new_chat_button->yoga_node(), YGEdgeBottom, 12);
-  new_chat_button->style().border = theme::kBorder;
-  new_chat_button->style().border_width = 1;
+  BuildSidebarRow(sidebar, "new-chat", "New chat", ui::IconKind::kPlus, false,
+                  "Ctrl+N");
 
-  ui::Node* recent_heading = sidebar->AddChild();
-  SetPadding(recent_heading->yoga_node(), 10, 4);
-  BuildLabel(recent_heading, "Recent", small_font_.get(), theme::kTextMuted);
+  ui::Node* section_caption = sidebar->AddChild();
+  YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeTop,
+                       theme::Spacing(5));
+  YGNodeStyleSetMargin(section_caption->yoga_node(), YGEdgeBottom,
+                       theme::Spacing(1));
+  YGNodeStyleSetPadding(section_caption->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(2));
+  BuildLabel(section_caption, "Chats", caption_strong_font_.get(),
+             palette_.text_tertiary);
 
   ui::Node* conversation_list = sidebar->AddChild();
   YGNodeStyleSetFlexGrow(conversation_list->yoga_node(), 1);
-  YGNodeStyleSetGap(conversation_list->yoga_node(), YGGutterRow, 2);
-  const float title_width = theme::kSidebarWidth - 24 - 20;
+  YGNodeStyleSetFlexShrink(conversation_list->yoga_node(), 1);
+  YGNodeStyleSetGap(conversation_list->yoga_node(), YGGutterRow,
+                    theme::Spacing(0.5f));
   for (size_t index = 0; index < conversations_.size(); ++index) {
-    std::string item_id =
-        std::string(kConversationIdPrefix) + std::to_string(index);
-    ui::Node* item = conversation_list->AddChild(item_id);
-    SetPadding(item->yoga_node(), 10, 8);
-    item->style().corner_radius = 8;
-    item->style().cursor = CursorKind::kHand;
-    if (index == active_conversation_index_) {
-      item->style().background = theme::kSelectedBackground;
-    } else if (hovered_node_id_ == item_id) {
-      item->style().background = theme::kHoverBackground;
-    }
-    BuildLabel(item,
-               body_font_->Elide(conversations_[index].title, title_width),
-               body_font_.get(), theme::kTextPrimary);
+    BuildSidebarRow(conversation_list,
+                    std::string(kConversationIdPrefix) + std::to_string(index),
+                    conversations_[index].title, ui::IconKind::kNone,
+                    index == active_conversation_index_, {});
   }
 
-  ui::Node* settings_button =
-      BuildButton(sidebar, "settings-toggle", "Settings", false);
-  YGNodeStyleSetJustifyContent(settings_button->yoga_node(),
-                               YGJustifyFlexStart);
-  if (settings_panel_open_) {
-    settings_button->style().background = theme::kSelectedBackground;
-  }
+  BuildSidebarRow(sidebar, "settings-toggle", "Settings", ui::IconKind::kNone,
+                  settings_panel_open_, "Ctrl+,");
 }
 
 void App::BuildChatArea(ui::Node* parent) {
@@ -357,83 +448,121 @@ void App::BuildChatArea(ui::Node* parent) {
   YGNodeStyleSetFlexGrow(chat_area->yoga_node(), 1);
   YGNodeStyleSetFlexShrink(chat_area->yoga_node(), 1);
   YGNodeStyleSetMinWidth(chat_area->yoga_node(), 0);
+  BuildTopBar(chat_area);
+  AddHairline(chat_area, message_scroll_offset_ > 0.5f ? palette_.separator
+                                                       : theme::kTransparent);
+  BuildMessageList(chat_area);
+  BuildComposer(chat_area);
+}
 
-  const Conversation& conversation = conversations_[active_conversation_index_];
-  ui::Node* top_bar = chat_area->AddChild();
+void App::BuildTopBar(ui::Node* parent) {
+  ui::Node* top_bar = parent->AddChild();
   MakeRow(top_bar->yoga_node());
   YGNodeStyleSetHeight(top_bar->yoga_node(), theme::kTopBarHeight);
   YGNodeStyleSetFlexShrink(top_bar->yoga_node(), 0);
-  YGNodeStyleSetAlignItems(top_bar->yoga_node(), YGAlignCenter);
   YGNodeStyleSetJustifyContent(top_bar->yoga_node(), YGJustifySpaceBetween);
-  YGNodeStyleSetGap(top_bar->yoga_node(), YGGutterColumn, 12);
-  SetPadding(top_bar->yoga_node(), 20, 0);
-  ui::Node* title = BuildLabel(top_bar, conversation.title,
-                               body_strong_font_.get(), theme::kTextPrimary);
+  YGNodeStyleSetGap(top_bar->yoga_node(), YGGutterColumn, theme::Spacing(3));
+  YGNodeStyleSetPadding(top_bar->yoga_node(), YGEdgeLeft, theme::Spacing(5));
+  YGNodeStyleSetPadding(top_bar->yoga_node(), YGEdgeRight, theme::Spacing(3));
+
+  ui::Node* title =
+      BuildLabel(top_bar, conversations_[active_conversation_index_].title,
+                 headline_font_.get(), palette_.text_primary);
   YGNodeStyleSetFlexShrink(title->yoga_node(), 1);
   title->style().elides_text = true;
 
-  ui::Node* model_badge = top_bar->AddChild();
-  SetPadding(model_badge->yoga_node(), 10, 4);
-  YGNodeStyleSetFlexShrink(model_badge->yoga_node(), 0);
-  model_badge->style().corner_radius = 12;
-  model_badge->style().border = theme::kBorder;
-  model_badge->style().border_width = 1;
-  BuildLabel(model_badge,
+  const std::string model_picker_id = "model-picker";
+  ui::Node* model_picker = top_bar->AddChild(model_picker_id);
+  MakeRow(model_picker->yoga_node());
+  YGNodeStyleSetHeight(model_picker->yoga_node(), 32);
+  YGNodeStyleSetFlexShrink(model_picker->yoga_node(), 0);
+  YGNodeStyleSetGap(model_picker->yoga_node(), YGGutterColumn,
+                    theme::Spacing(1.5f));
+  YGNodeStyleSetPadding(model_picker->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(2.5f));
+  model_picker->style().corner_radius = theme::kControlCornerRadius;
+  model_picker->style().cursor = CursorKind::kHand;
+  model_picker->style().background =
+      InteractiveFill(model_picker_id, theme::kTransparent,
+                      palette_.control_hover, palette_.control_pressed);
+  BuildLabel(model_picker,
              generation_settings_.model_path.empty()
-                 ? "No model loaded"
-                 : generation_settings_.model_path,
-             small_font_.get(), theme::kTextMuted);
-
-  AddSeparator(chat_area);
-  BuildMessageList(chat_area);
-  BuildComposer(chat_area);
+                 ? "No model"
+                 : FileNameFromPath(generation_settings_.model_path),
+             body_font_.get(), palette_.text_secondary);
+  BuildIcon(model_picker, ui::IconKind::kChevronDown, palette_.text_secondary,
+            12);
 }
 
 void App::BuildMessageList(ui::Node* parent) {
   ui::Node* viewport = parent->AddChild(std::string(kMessageViewportId));
   MakeScrollViewport(viewport, message_scroll_offset_);
 
+  const Conversation& conversation = conversations_[active_conversation_index_];
   ui::Node* content = viewport->AddChild();
   YGNodeStyleSetFlexShrink(content->yoga_node(), 0);
+  YGNodeStyleSetFlexGrow(content->yoga_node(), 1);
   YGNodeStyleSetAlignItems(content->yoga_node(), YGAlignCenter);
-  SetPadding(content->yoga_node(), 0, 24);
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeVertical,
+                        theme::Spacing(6));
+  if (conversation.messages.empty()) {
+    YGNodeStyleSetJustifyContent(content->yoga_node(), YGJustifyCenter);
+    BuildEmptyState(content);
+    return;
+  }
 
   ui::Node* column = content->AddChild();
   YGNodeStyleSetWidthPercent(column->yoga_node(), 100);
   YGNodeStyleSetMaxWidth(column->yoga_node(),
                          theme::kMessageColumnMaximumWidth);
-  YGNodeStyleSetGap(column->yoga_node(), YGGutterRow, 14);
-  SetPadding(column->yoga_node(), 24, 0);
-
-  const Conversation& conversation = conversations_[active_conversation_index_];
-  if (conversation.messages.empty()) {
-    ui::Node* empty_state = column->AddChild();
-    YGNodeStyleSetAlignItems(empty_state->yoga_node(), YGAlignCenter);
-    YGNodeStyleSetGap(empty_state->yoga_node(), YGGutterRow, 8);
-    YGNodeStyleSetMargin(empty_state->yoga_node(), YGEdgeTop, 96);
-    BuildLabel(empty_state, "Start a conversation", title_font_.get(),
-               theme::kTextPrimary);
-    BuildLabel(empty_state,
-               "Load a GGUF model in Settings to chat with llama.cpp.",
-               body_font_.get(), theme::kTextMuted);
-    return;
-  }
+  YGNodeStyleSetGap(column->yoga_node(), YGGutterRow, theme::Spacing(6));
+  YGNodeStyleSetPadding(column->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(6));
 
   for (const ChatMessage& message : conversation.messages) {
-    const bool from_user = message.role == MessageRole::kUser;
-    ui::Node* row = column->AddChild();
-    MakeRow(row->yoga_node());
-    YGNodeStyleSetJustifyContent(
-        row->yoga_node(), from_user ? YGJustifyFlexEnd : YGJustifyFlexStart);
-    ui::Node* bubble = row->AddChild();
-    YGNodeStyleSetMaxWidthPercent(bubble->yoga_node(), 85);
-    YGNodeStyleSetFlexShrink(bubble->yoga_node(), 1);
-    SetPadding(bubble->yoga_node(), 14, 10);
-    bubble->style().corner_radius = 14;
-    bubble->style().background =
-        from_user ? theme::kUserBubble : theme::kAssistantBubble;
-    BuildLabel(bubble, message.text, body_font_.get(), theme::kTextPrimary,
-               true);
+    if (message.role == MessageRole::kUser) {
+      ui::Node* row = column->AddChild();
+      YGNodeStyleSetFlexDirection(row->yoga_node(), YGFlexDirectionRow);
+      YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifyFlexEnd);
+      ui::Node* bubble = row->AddChild();
+      YGNodeStyleSetMaxWidthPercent(bubble->yoga_node(), 80);
+      YGNodeStyleSetFlexShrink(bubble->yoga_node(), 1);
+      SetPadding(bubble->yoga_node(), theme::Spacing(4), theme::Spacing(2.5f));
+      bubble->style().corner_radius = theme::kBubbleCornerRadius;
+      bubble->style().background = palette_.accent;
+      BuildLabel(bubble, message.text, body_font_.get(),
+                 palette_.text_on_accent, true);
+    } else {
+      BuildLabel(
+          column, message.text, body_font_.get(),
+          message.is_notice ? palette_.text_secondary : palette_.text_primary,
+          true);
+    }
+  }
+}
+
+void App::BuildEmptyState(ui::Node* parent) {
+  ui::Node* empty_state = parent->AddChild();
+  YGNodeStyleSetAlignItems(empty_state->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetGap(empty_state->yoga_node(), YGGutterRow, theme::Spacing(2));
+  YGNodeStyleSetPadding(empty_state->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(6));
+  const bool model_loaded = !generation_settings_.model_path.empty();
+  BuildLabel(
+      empty_state,
+      model_loaded ? "What would you like to ask?" : "Choose a model to begin",
+      title_font_.get(), palette_.text_primary);
+  ui::Node* description_spacer = empty_state->AddChild();
+  YGNodeStyleSetHeight(description_spacer->yoga_node(), theme::Spacing(1));
+  BuildLabel(empty_state, "Lale runs llama.cpp models locally on this PC.",
+             body_font_.get(), palette_.text_secondary);
+  BuildLabel(empty_state, "Nothing you type leaves your computer.",
+             body_font_.get(), palette_.text_secondary);
+  if (!model_loaded) {
+    ui::Node* button_spacer = empty_state->AddChild();
+    YGNodeStyleSetHeight(button_spacer->yoga_node(), theme::Spacing(3));
+    BuildTextButton(empty_state, "empty-open-settings", "Open Settings",
+                    ButtonStyle::kPrimary);
   }
 }
 
@@ -442,182 +571,231 @@ void App::BuildComposer(ui::Node* parent) {
   ui::Node* dock = parent->AddChild();
   YGNodeStyleSetFlexShrink(dock->yoga_node(), 0);
   YGNodeStyleSetAlignItems(dock->yoga_node(), YGAlignCenter);
-  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeHorizontal, 24);
-  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeTop, 8);
-  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeBottom, 16);
+  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeHorizontal, theme::Spacing(6));
+  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeTop, theme::Spacing(2));
+  YGNodeStyleSetPadding(dock->yoga_node(), YGEdgeBottom, theme::Spacing(5));
 
   ui::Node* field_box = dock->AddChild(std::string(kComposerFieldId));
-  MakeRow(field_box->yoga_node());
-  YGNodeStyleSetWidthPercent(field_box->yoga_node(), 100);
-  YGNodeStyleSetMaxWidth(field_box->yoga_node(),
-                         theme::kMessageColumnMaximumWidth - 48);
+  YGNodeStyleSetFlexDirection(field_box->yoga_node(), YGFlexDirectionRow);
   YGNodeStyleSetAlignItems(field_box->yoga_node(), YGAlignFlexEnd);
-  YGNodeStyleSetGap(field_box->yoga_node(), YGGutterColumn, 10);
-  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeLeft, 14);
-  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeRight, 8);
-  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeVertical, 8);
-  field_box->style().corner_radius = 14;
-  field_box->style().background = theme::kInputBackground;
+  YGNodeStyleSetWidthPercent(field_box->yoga_node(), 100);
+  YGNodeStyleSetMaxWidth(
+      field_box->yoga_node(),
+      theme::kMessageColumnMaximumWidth - 2 * theme::Spacing(6));
+  YGNodeStyleSetGap(field_box->yoga_node(), YGGutterColumn, theme::Spacing(2));
+  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeLeft, theme::Spacing(4));
+  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeRight, theme::Spacing(2));
+  YGNodeStyleSetPadding(field_box->yoga_node(), YGEdgeVertical,
+                        theme::Spacing(2));
+  field_box->style().corner_radius = theme::kComposerCornerRadius;
+  field_box->style().background = palette_.card_background;
   field_box->style().border =
-      composer_focused ? theme::kAccent : theme::kBorder;
+      composer_focused ? palette_.accent : palette_.separator;
   field_box->style().border_width = 1;
   field_box->style().cursor = CursorKind::kIBeam;
 
   ui::Node* field_text = BuildLabel(field_box, composer_text_, body_font_.get(),
-                                    theme::kTextPrimary, true);
+                                    palette_.text_primary, true);
   YGNodeStyleSetFlexGrow(field_text->yoga_node(), 1);
   YGNodeStyleSetFlexShrink(field_text->yoga_node(), 1);
   YGNodeStyleSetMaxHeight(field_text->yoga_node(),
-                          theme::kComposerMaximumHeight);
-  YGNodeStyleSetMargin(field_text->yoga_node(), YGEdgeBottom, 7);
+                          theme::kComposerMaximumTextHeight);
+  YGNodeStyleSetMargin(field_text->yoga_node(), YGEdgeBottom,
+                       theme::Spacing(1.5f));
   field_text->style().placeholder = "Message Lale";
-  field_text->style().placeholder_color = theme::kTextMuted;
+  field_text->style().placeholder_color = palette_.text_tertiary;
   field_text->style().shows_caret = composer_focused;
 
-  BuildButton(field_box, "send", "Send", true,
-              !TrimWhitespace(composer_text_).empty());
+  const bool can_send = !TrimWhitespace(composer_text_).empty();
+  const std::string send_id = can_send ? "send" : std::string();
+  ui::Node* send_button = field_box->AddChild(send_id);
+  YGNodeStyleSetWidth(send_button->yoga_node(), 32);
+  YGNodeStyleSetHeight(send_button->yoga_node(), 32);
+  YGNodeStyleSetFlexShrink(send_button->yoga_node(), 0);
+  send_button->style().corner_radius = 16;
+  send_button->style().cursor =
+      can_send ? CursorKind::kHand : CursorKind::kIBeam;
+  send_button->style().background =
+      can_send ? InteractiveFill(send_id, palette_.accent,
+                                 palette_.accent_hover, palette_.accent_pressed)
+               : palette_.accent_disabled;
+  send_button->style().icon = ui::IconKind::kArrowUp;
+  send_button->style().icon_color =
+      can_send ? palette_.text_on_accent : palette_.text_on_accent_disabled;
+}
 
-  ui::Node* hint = dock->AddChild();
-  YGNodeStyleSetMargin(hint->yoga_node(), YGEdgeTop, 8);
-  YGNodeStyleSetMaxWidthPercent(hint->yoga_node(), 100);
-  ui::Node* hint_text =
-      BuildLabel(hint, "Enter to send, Shift+Enter for a new line",
-                 small_font_.get(), theme::kTextMuted);
-  hint_text->style().elides_text = true;
+ui::Node* App::BuildSettingsSection(ui::Node* parent, std::string caption) {
+  ui::Node* caption_box = parent->AddChild();
+  YGNodeStyleSetMargin(caption_box->yoga_node(), YGEdgeTop, theme::Spacing(5));
+  YGNodeStyleSetMargin(caption_box->yoga_node(), YGEdgeBottom,
+                       theme::Spacing(1.5f));
+  YGNodeStyleSetPadding(caption_box->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(1));
+  BuildLabel(caption_box, std::move(caption), caption_strong_font_.get(),
+             palette_.text_tertiary);
+
+  ui::Node* card = parent->AddChild();
+  card->style().corner_radius = theme::kCardCornerRadius;
+  card->style().background = palette_.card_background;
+  if (!palette_.is_dark) {
+    card->style().border = palette_.separator;
+    card->style().border_width = 1;
+  }
+  return card;
+}
+
+void App::BuildSettingsRowSeparator(ui::Node* card) {
+  ui::Node* separator = AddHairline(card, palette_.separator);
+  YGNodeStyleSetMargin(separator->yoga_node(), YGEdgeLeft,
+                       theme::Spacing(3.5f));
 }
 
 void App::BuildSettingsPanel(ui::Node* parent) {
-  ui::Node* panel = parent->AddChild();
-  YGNodeStyleSetWidth(panel->yoga_node(), theme::kSettingsPanelWidth);
-  YGNodeStyleSetFlexShrink(panel->yoga_node(), 0);
-  panel->style().background = theme::kSidebarBackground;
+  ui::Node* panel_with_edge = parent->AddChild();
+  YGNodeStyleSetFlexDirection(panel_with_edge->yoga_node(), YGFlexDirectionRow);
+  YGNodeStyleSetFlexShrink(panel_with_edge->yoga_node(), 0);
+  ui::Node* edge = panel_with_edge->AddChild();
+  YGNodeStyleSetWidth(edge->yoga_node(), 1);
+  edge->style().background = palette_.separator;
+
+  ui::Node* panel = panel_with_edge->AddChild();
+  YGNodeStyleSetWidth(panel->yoga_node(), theme::kSettingsPanelWidth - 1);
+  panel->style().background = palette_.sidebar_background;
 
   ui::Node* header = panel->AddChild();
   MakeRow(header->yoga_node());
   YGNodeStyleSetHeight(header->yoga_node(), theme::kTopBarHeight);
   YGNodeStyleSetFlexShrink(header->yoga_node(), 0);
-  YGNodeStyleSetAlignItems(header->yoga_node(), YGAlignCenter);
   YGNodeStyleSetJustifyContent(header->yoga_node(), YGJustifySpaceBetween);
-  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeLeft, 20);
-  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeRight, 10);
-  BuildLabel(header, "Settings", body_strong_font_.get(), theme::kTextPrimary);
-  BuildIconButton(header, "settings-close", ui::IconKind::kClose);
-  AddSeparator(panel);
+  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeLeft, theme::Spacing(5));
+  YGNodeStyleSetPadding(header->yoga_node(), YGEdgeRight, theme::Spacing(3));
+  BuildLabel(header, "Settings", headline_font_.get(), palette_.text_primary);
+  BuildIconButton(header, "settings-close", ui::IconKind::kClose, 28);
 
   ui::Node* viewport = panel->AddChild(std::string(kSettingsViewportId));
   MakeScrollViewport(viewport, settings_scroll_offset_);
   ui::Node* content = viewport->AddChild();
   YGNodeStyleSetFlexShrink(content->yoga_node(), 0);
-  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeAll, 20);
-  YGNodeStyleSetGap(content->yoga_node(), YGGutterRow, 10);
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(4));
+  YGNodeStyleSetPadding(content->yoga_node(), YGEdgeBottom, theme::Spacing(6));
 
-  auto add_section_heading = [&](std::string heading_text, bool first) {
-    ui::Node* heading = content->AddChild();
-    if (!first) YGNodeStyleSetMargin(heading->yoga_node(), YGEdgeTop, 14);
-    BuildLabel(heading, std::move(heading_text), body_strong_font_.get(),
-               theme::kTextPrimary);
-  };
-
-  add_section_heading("Model", true);
-  ui::Node* model_card = content->AddChild();
-  YGNodeStyleSetGap(model_card->yoga_node(), YGGutterRow, 4);
-  SetPadding(model_card->yoga_node(), 12, 10);
-  model_card->style().corner_radius = 8;
-  model_card->style().background = theme::kPanelBackground;
-  BuildLabel(model_card,
+  ui::Node* model_card = BuildSettingsSection(content, "Model");
+  ui::Node* model_row = model_card->AddChild();
+  YGNodeStyleSetGap(model_row->yoga_node(), YGGutterRow, theme::Spacing(1));
+  SetPadding(model_row->yoga_node(), theme::Spacing(3.5f), theme::Spacing(3));
+  BuildLabel(model_row,
              generation_settings_.model_path.empty()
                  ? "No model loaded"
-                 : generation_settings_.model_path,
-             body_font_.get(), theme::kTextPrimary, true);
-  BuildLabel(model_card, "Model loading arrives with the llama.cpp backend.",
-             small_font_.get(), theme::kTextMuted, true);
+                 : FileNameFromPath(generation_settings_.model_path),
+             body_font_.get(), palette_.text_primary, true);
+  BuildLabel(model_row, "Model loading arrives with the llama.cpp backend.",
+             caption_font_.get(), palette_.text_secondary, true);
 
-  add_section_heading("Sampling", false);
-  BuildStepperRow(content, "Temperature", "temperature",
+  ui::Node* sampling_card = BuildSettingsSection(content, "Sampling");
+  BuildStepperRow(sampling_card, "Temperature", "temperature",
                   FormatDecimal(generation_settings_.temperature));
-  BuildStepperRow(content, "Top P", "top-p",
+  BuildSettingsRowSeparator(sampling_card);
+  BuildStepperRow(sampling_card, "Top P", "top-p",
                   FormatDecimal(generation_settings_.top_p));
-  BuildStepperRow(content, "Top K", "top-k",
+  BuildSettingsRowSeparator(sampling_card);
+  BuildStepperRow(sampling_card, "Top K", "top-k",
                   std::to_string(generation_settings_.top_k));
-  BuildStepperRow(content, "Max tokens", "max-tokens",
+  BuildSettingsRowSeparator(sampling_card);
+  BuildStepperRow(sampling_card, "Max tokens", "max-tokens",
                   std::to_string(generation_settings_.maximum_tokens));
-  BuildStepperRow(content, "Context size", "context-size",
+  BuildSettingsRowSeparator(sampling_card);
+  BuildStepperRow(sampling_card, "Context size", "context-size",
                   std::to_string(generation_settings_.context_size));
 
-  add_section_heading("System prompt", false);
+  ui::Node* prompt_card = BuildSettingsSection(content, "System prompt");
   const bool system_prompt_focused = focused_field_id_ == kSystemPromptFieldId;
-  ui::Node* prompt_box = content->AddChild(std::string(kSystemPromptFieldId));
-  YGNodeStyleSetMinHeight(prompt_box->yoga_node(), 88);
-  SetPadding(prompt_box->yoga_node(), 12, 10);
-  prompt_box->style().corner_radius = 8;
-  prompt_box->style().background = theme::kInputBackground;
-  prompt_box->style().border =
-      system_prompt_focused ? theme::kAccent : theme::kBorder;
-  prompt_box->style().border_width = 1;
-  prompt_box->style().cursor = CursorKind::kIBeam;
+  ui::Node* prompt_field =
+      prompt_card->AddChild(std::string(kSystemPromptFieldId));
+  YGNodeStyleSetMinHeight(prompt_field->yoga_node(), 96);
+  SetPadding(prompt_field->yoga_node(), theme::Spacing(3.5f),
+             theme::Spacing(3));
+  prompt_field->style().corner_radius = theme::kCardCornerRadius;
+  prompt_field->style().cursor = CursorKind::kIBeam;
+  if (system_prompt_focused) {
+    prompt_field->style().border = palette_.accent;
+    prompt_field->style().border_width = 1;
+  }
   ui::Node* prompt_text =
-      BuildLabel(prompt_box, generation_settings_.system_prompt,
-                 body_font_.get(), theme::kTextPrimary, true);
+      BuildLabel(prompt_field, generation_settings_.system_prompt,
+                 body_font_.get(), palette_.text_primary, true);
   prompt_text->style().placeholder = "No system prompt";
-  prompt_text->style().placeholder_color = theme::kTextMuted;
+  prompt_text->style().placeholder_color = palette_.text_tertiary;
   prompt_text->style().shows_caret = system_prompt_focused;
 
-  add_section_heading("Output", false);
-  BuildToggleRow(content, "Stream tokens", "stream",
+  ui::Node* output_card = BuildSettingsSection(content, "Output");
+  BuildToggleRow(output_card, "Stream tokens", "stream",
                  generation_settings_.stream_tokens);
+
+  ui::Node* reset_row = content->AddChild();
+  YGNodeStyleSetMargin(reset_row->yoga_node(), YGEdgeTop, theme::Spacing(4));
+  YGNodeStyleSetAlignItems(reset_row->yoga_node(), YGAlignFlexStart);
+  BuildTextButton(reset_row, "reset-settings", "Reset to defaults",
+                  ButtonStyle::kPlain, !SettingsMatchDefaults());
 }
 
-void App::BuildStepperRow(ui::Node* parent, std::string_view label,
+void App::BuildStepperRow(ui::Node* card, std::string_view label,
                           std::string_view setting_key,
                           std::string value_text) {
-  ui::Node* row = parent->AddChild();
+  ui::Node* row = card->AddChild();
   MakeRow(row->yoga_node());
-  YGNodeStyleSetAlignItems(row->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetHeight(row->yoga_node(), theme::kSettingsRowHeight);
   YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifySpaceBetween);
-  BuildLabel(row, std::string(label), body_font_.get(), theme::kTextMuted);
+  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeLeft, theme::Spacing(3.5f));
+  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeRight, theme::Spacing(2));
+  BuildLabel(row, std::string(label), body_font_.get(), palette_.text_primary);
 
-  ui::Node* controls = row->AddChild();
-  MakeRow(controls->yoga_node());
-  YGNodeStyleSetAlignItems(controls->yoga_node(), YGAlignCenter);
-  controls->style().corner_radius = 8;
-  controls->style().background = theme::kPanelBackground;
+  ui::Node* stepper = row->AddChild();
+  MakeRow(stepper->yoga_node());
+  stepper->style().corner_radius = theme::kControlCornerRadius;
+  stepper->style().background =
+      palette_.is_dark ? palette_.control_hover : palette_.window_background;
 
   std::string id_prefix =
       std::string(kStepperIdPrefix) + std::string(setting_key) + ":";
-  BuildIconButton(controls, id_prefix + "decrease", ui::IconKind::kMinus);
-  ui::Node* value_box = controls->AddChild();
-  YGNodeStyleSetWidth(value_box->yoga_node(), 64);
+  BuildIconButton(stepper, id_prefix + "decrease", ui::IconKind::kMinus, 28);
+  ui::Node* value_box = stepper->AddChild();
+  YGNodeStyleSetWidth(value_box->yoga_node(), 56);
   YGNodeStyleSetAlignItems(value_box->yoga_node(), YGAlignCenter);
   BuildLabel(value_box, std::move(value_text), body_font_.get(),
-             theme::kTextPrimary);
-  BuildIconButton(controls, id_prefix + "increase", ui::IconKind::kPlus);
+             palette_.text_primary);
+  BuildIconButton(stepper, id_prefix + "increase", ui::IconKind::kPlus, 28);
 }
 
-void App::BuildToggleRow(ui::Node* parent, std::string_view label,
+void App::BuildToggleRow(ui::Node* card, std::string_view label,
                          std::string_view setting_key, bool enabled) {
-  ui::Node* row = parent->AddChild();
+  const std::string toggle_id =
+      std::string(kToggleIdPrefix) + std::string(setting_key);
+  ui::Node* row = card->AddChild(toggle_id);
   MakeRow(row->yoga_node());
-  YGNodeStyleSetAlignItems(row->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetHeight(row->yoga_node(), theme::kSettingsRowHeight);
   YGNodeStyleSetJustifyContent(row->yoga_node(), YGJustifySpaceBetween);
-  BuildLabel(row, std::string(label), body_font_.get(), theme::kTextMuted);
+  YGNodeStyleSetPadding(row->yoga_node(), YGEdgeHorizontal,
+                        theme::Spacing(3.5f));
+  row->style().cursor = CursorKind::kHand;
+  BuildLabel(row, std::string(label), body_font_.get(), palette_.text_primary);
 
-  ui::Node* track =
-      row->AddChild(std::string(kToggleIdPrefix) + std::string(setting_key));
-  MakeRow(track->yoga_node());
-  YGNodeStyleSetWidth(track->yoga_node(), 38);
+  ui::Node* track = row->AddChild();
+  YGNodeStyleSetFlexDirection(track->yoga_node(), YGFlexDirectionRow);
+  YGNodeStyleSetAlignItems(track->yoga_node(), YGAlignCenter);
+  YGNodeStyleSetWidth(track->yoga_node(), 40);
   YGNodeStyleSetHeight(track->yoga_node(), 22);
-  YGNodeStyleSetPadding(track->yoga_node(), YGEdgeAll, 3);
+  YGNodeStyleSetPadding(track->yoga_node(), YGEdgeAll, 2);
   YGNodeStyleSetJustifyContent(track->yoga_node(),
                                enabled ? YGJustifyFlexEnd : YGJustifyFlexStart);
   track->style().corner_radius = 11;
-  track->style().background = enabled ? theme::kAccent : theme::kToggleOff;
-  track->style().cursor = CursorKind::kHand;
+  track->style().background = enabled ? palette_.accent : palette_.toggle_off;
 
   ui::Node* knob = track->AddChild();
-  YGNodeStyleSetWidth(knob->yoga_node(), 16);
-  YGNodeStyleSetHeight(knob->yoga_node(), 16);
-  knob->style().corner_radius = 8;
-  knob->style().background = theme::kToggleKnob;
+  YGNodeStyleSetWidth(knob->yoga_node(), 18);
+  YGNodeStyleSetHeight(knob->yoga_node(), 18);
+  knob->style().corner_radius = 9;
+  knob->style().background = palette_.toggle_knob;
 }
 
 bool App::IsTextField(std::string_view node_id) const {
@@ -645,8 +823,13 @@ void App::HandleClick(const std::string& node_id) {
     settings_panel_open_ = !settings_panel_open_;
   } else if (node_id == "settings-close") {
     settings_panel_open_ = false;
+  } else if (node_id == "model-picker" || node_id == "empty-open-settings") {
+    settings_panel_open_ = true;
+    settings_scroll_offset_ = 0;
   } else if (node_id == "send") {
     SendComposerMessage();
+  } else if (node_id == "reset-settings") {
+    ResetSettingsToDefaults();
   } else if (StartsWith(node_id, kStepperIdPrefix)) {
     std::string_view rest =
         std::string_view(node_id).substr(kStepperIdPrefix.size());
@@ -680,6 +863,23 @@ void App::StepSetting(std::string_view setting_key, int direction) {
   }
 }
 
+bool App::SettingsMatchDefaults() const {
+  const GenerationSettings defaults;
+  const GenerationSettings& current = generation_settings_;
+  return current.temperature == defaults.temperature &&
+         current.top_p == defaults.top_p && current.top_k == defaults.top_k &&
+         current.maximum_tokens == defaults.maximum_tokens &&
+         current.context_size == defaults.context_size &&
+         current.stream_tokens == defaults.stream_tokens &&
+         current.system_prompt == defaults.system_prompt;
+}
+
+void App::ResetSettingsToDefaults() {
+  std::string kept_model_path = generation_settings_.model_path;
+  generation_settings_ = GenerationSettings();
+  generation_settings_.model_path = std::move(kept_model_path);
+}
+
 void App::SendComposerMessage() {
   std::string message_text = TrimWhitespace(composer_text_);
   if (message_text.empty()) return;
@@ -688,9 +888,9 @@ void App::SendComposerMessage() {
       conversation.title == kNewConversationTitle) {
     conversation.title = message_text.substr(0, message_text.find('\n'));
   }
-  conversation.messages.push_back({MessageRole::kUser, message_text});
+  conversation.messages.push_back({MessageRole::kUser, message_text, false});
   conversation.messages.push_back(
-      {MessageRole::kAssistant, std::string(kNoModelReply)});
+      {MessageRole::kAssistant, std::string(kNoModelNotice), true});
   composer_text_.clear();
   message_scroll_pinned_to_bottom_ = true;
 }
@@ -719,6 +919,8 @@ void App::OnDpiChanged(UINT dots_per_inch) {
   Invalidate();
 }
 
+void App::OnSystemAppearanceChanged() { ApplySystemAppearance(); }
+
 void App::OnPaint() { RenderFrame(); }
 
 void App::OnMouseMove(float x, float y) {
@@ -745,8 +947,20 @@ void App::OnMouseDown(float x, float y) {
   } else if (hit_id != "send") {
     focused_field_id_.clear();
   }
-  HandleClick(hit_id);
+  pressed_node_id_ = IsTextField(hit_id) ? std::string() : hit_id;
+  hovered_node_id_ = hit_id;
   ResetCaretBlink();
+}
+
+void App::OnMouseUp(float x, float y) {
+  const ui::Node* hit = HitTestDevicePoint(x, y);
+  std::string released_id = hit ? hit->id() : std::string();
+  std::string pressed_id = std::move(pressed_node_id_);
+  pressed_node_id_.clear();
+  if (!pressed_id.empty() && pressed_id == released_id) {
+    HandleClick(pressed_id);
+  }
+  Invalidate();
 }
 
 void App::OnMouseWheel(float x, float y, float wheel_steps) {
@@ -778,6 +992,16 @@ void App::OnText(const std::string& utf8_text) {
 }
 
 void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
+  if (control_down && virtual_key == 'N') {
+    StartNewConversation();
+    ResetCaretBlink();
+    return;
+  }
+  if (control_down && virtual_key == VK_OEM_COMMA) {
+    settings_panel_open_ = !settings_panel_open_;
+    Invalidate();
+    return;
+  }
   if (virtual_key == VK_ESCAPE) {
     if (settings_panel_open_) {
       settings_panel_open_ = false;

@@ -18,13 +18,15 @@ endif()
 add_executable(lale WIN32
     src/Main.cc
     src/app/App.cc
+    src/app/Theme.cc
     src/gfx/Presenter.cc
+    src/platform/SystemAppearance.cc
     src/platform/Window.cc
     src/ui/Font.cc
     src/ui/Node.cc
     src/ui/Renderer.cc)
 target_include_directories(lale PRIVATE src)
-target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi)
+target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi dwmapi)
 if(llama_FOUND)
     target_link_libraries(lale PRIVATE llama)
 endif()

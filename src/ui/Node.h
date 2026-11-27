@@ -30,7 +30,7 @@ struct Rect {
   Rect Intersect(const Rect& other) const;
 };
 
-enum class IconKind { kNone, kMinus, kPlus, kClose };
+enum class IconKind { kNone, kMinus, kPlus, kClose, kArrowUp, kChevronDown };
 
 struct NodeStyle {
   Color background;

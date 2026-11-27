@@ -1,0 +1,60 @@
+name: Linux Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build and SDL dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libdecor-0-dev \
+            libegl-dev \
+            libgl-dev \
+            libdbus-1-dev
+
+      - name: Build and install llama.cpp (CPU)
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cmake -S /tmp/llama.cpp -B /tmp/llama-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/llama-install \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_APP=OFF \
+            -DLLAMA_BUILD_COMMON=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DBUILD_SHARED_LIBS=ON
+          cmake --build /tmp/llama-build
+          cmake --install /tmp/llama-build
+
+      - name: Configure and build Lale
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -Dllama_DIR=/tmp/llama-install/lib/cmake/llama
+          cmake --build build
+
+      - name: Install Lale
+        run: cmake --install build --prefix /tmp/lale-install

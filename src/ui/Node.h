@@ -66,6 +66,10 @@ struct NodeStyle {
   bool wraps_text = false;
   bool elides_text = false;
   bool shows_caret = false;
+  size_t caret_byte = std::string::npos;
+  size_t selection_begin = 0;
+  size_t selection_end = 0;
+  Color selection_color;
 
   IconKind icon = IconKind::kNone;
   Color icon_color;

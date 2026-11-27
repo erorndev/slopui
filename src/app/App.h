@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "ui/Markdown.h"
 #include "ui/Node.h"
 #include "ui/Renderer.h"
+#include "ui/TextEditing.h"
 
 namespace lale {
 
@@ -37,6 +39,12 @@ enum class ButtonStyle { kPrimary, kSecondary, kLink };
 
 enum class SettingsSection { kModel, kSampling, kAppearance, kShortcuts };
 
+struct TextFieldEditor {
+  std::string* text = nullptr;
+  ui::TextSelection* selection = nullptr;
+  ui::TextEditHistory* history = nullptr;
+};
+
 struct SegmentOption {
   std::string key;
   std::string label;
@@ -57,7 +65,7 @@ class App : public WindowHandler {
   void OnPaint() override;
   void OnMouseMove(float x, float y) override;
   void OnMouseLeave() override;
-  void OnMouseDown(float x, float y) override;
+  void OnMouseDown(float x, float y, bool shift_down) override;
   void OnMouseUp(float x, float y) override;
   void OnMouseWheel(float x, float y, float wheel_steps) override;
   void OnText(const std::string& utf8_text) override;
@@ -124,6 +132,10 @@ class App : public WindowHandler {
                             float size);
   ui::Node* BuildTextButton(ui::Node* parent, std::string id, std::string label,
                             ButtonStyle style, bool enabled = true);
+  ui::Node* BuildEditableText(ui::Node* parent, std::string_view field_id,
+                              const std::string& text,
+                              const ui::TextSelection& selection,
+                              std::string placeholder);
   ui::Node* BuildIcon(ui::Node* parent, ui::IconKind icon, ui::Color color,
                       float size);
   ui::Node* BuildKeyHint(ui::Node* parent, std::string keys);
@@ -151,8 +163,13 @@ class App : public WindowHandler {
   void ResetSettingsToDefaults();
   void SendComposerMessage();
   void StartNewConversation();
-  std::string* FocusedText();
   bool IsTextField(std::string_view node_id) const;
+  std::optional<TextFieldEditor> FocusedEditor();
+  const ui::Node* FocusedTextNode() const;
+  std::vector<ui::TextLine> FocusedFieldLines() const;
+  void PlaceCaretAtPoint(float logical_x, float logical_y, bool extend);
+  void EditFocusedText(std::string_view replacement, bool is_typing);
+  bool HandleEditingKey(UINT virtual_key, bool control_down, bool shift_down);
 
   Window window_;
   Presenter presenter_;
@@ -194,6 +211,12 @@ class App : public WindowHandler {
   std::string hovered_node_id_;
   std::string pressed_node_id_;
   bool caret_visible_ = true;
+  ui::TextSelection composer_selection_;
+  ui::TextEditHistory composer_history_;
+  ui::TextSelection system_prompt_selection_;
+  ui::TextEditHistory system_prompt_history_;
+  bool dragging_text_selection_ = false;
+  float preferred_caret_x_ = -1;
   bool window_active_ = true;
   float message_scroll_offset_ = 0;
   bool message_scroll_pinned_to_bottom_ = true;

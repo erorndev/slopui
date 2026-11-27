@@ -42,6 +42,7 @@ struct Palette {
   ui::Color warning_text;
   ui::Color warning_indicator;
   ui::Color close_button_hover;
+  ui::Color text_selection;
   ui::Color close_button_pressed;
   ui::Color text_on_close_button;
   ui::Color success_indicator;

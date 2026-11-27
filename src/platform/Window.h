@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <string>
+#include <string_view>
 
 namespace lale {
 
@@ -24,7 +25,7 @@ class WindowHandler {
   virtual void OnPaint() = 0;
   virtual void OnMouseMove(float x, float y) = 0;
   virtual void OnMouseLeave() = 0;
-  virtual void OnMouseDown(float x, float y) = 0;
+  virtual void OnMouseDown(float x, float y, bool shift_down) = 0;
   virtual void OnMouseUp(float x, float y) = 0;
   virtual void OnSystemAppearanceChanged() = 0;
   virtual void OnMouseWheel(float x, float y, float wheel_steps) = 0;
@@ -55,6 +56,7 @@ class Window {
   int client_height() const { return client_height_; }
   UINT dots_per_inch() const { return dots_per_inch_; }
   std::string ClipboardText() const;
+  void SetClipboardText(std::string_view utf8_text) const;
 
  private:
   static LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT message,

@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <string_view>
+
+#include "ui/TextEditing.h"
 
 namespace lale::ui {
 
@@ -343,6 +346,38 @@ void Renderer::DrawText(const Node& node, tvg::Scene* target_scene,
     lines.push_back({0, shown_text.size(), font.Measure(shown_text)});
   }
 
+  if (!showing_placeholder && style.selection_end > style.selection_begin) {
+    constexpr float kLineBreakSelectionWidth = 4.0f;
+    for (size_t line_index = 0; line_index < lines.size(); ++line_index) {
+      const TextLine& line = lines[line_index];
+      const size_t line_extent = line_index + 1 < lines.size()
+                                     ? lines[line_index + 1].begin_byte
+                                     : shown_text.size();
+      const size_t begin = std::max(style.selection_begin, line.begin_byte);
+      const size_t end = std::min(style.selection_end, line_extent);
+      if (begin >= end) continue;
+      const std::string_view line_text =
+          std::string_view(shown_text)
+              .substr(line.begin_byte, line.end_byte - line.begin_byte);
+      const float left = font.Measure(line_text.substr(
+          0, std::min(begin, line.end_byte) - line.begin_byte));
+      float right = font.Measure(
+          line_text.substr(0, std::min(end, line.end_byte) - line.begin_byte));
+      if (end > line.end_byte && line_index + 1 < lines.size()) {
+        right += kLineBreakSelectionWidth;
+      }
+      if (right <= left) continue;
+      tvg::Shape* highlight = tvg::Shape::gen();
+      highlight->appendRect(
+          bounds.x + left,
+          bounds.y + font.line_height() * static_cast<float>(line_index),
+          right - left, font.line_height());
+      highlight->fill(style.selection_color.red, style.selection_color.green,
+                      style.selection_color.blue, style.selection_color.alpha);
+      target_scene->add(highlight);
+    }
+  }
+
   for (size_t line_index = 0; line_index < lines.size(); ++line_index) {
     const TextLine& line = lines[line_index];
     if (line.end_byte <= line.begin_byte) continue;
@@ -363,8 +398,11 @@ void Renderer::DrawText(const Node& node, tvg::Scene* target_scene,
     float caret_x = bounds.x;
     float caret_y = bounds.y;
     if (!showing_placeholder && !lines.empty()) {
-      caret_x += lines.back().width;
-      caret_y += font.line_height() * static_cast<float>(lines.size() - 1);
+      const CaretLocation location =
+          LocateCaret(font, shown_text, lines,
+                      std::min(style.caret_byte, shown_text.size()));
+      caret_x += location.x;
+      caret_y += font.line_height() * static_cast<float>(location.line_index);
     }
     tvg::Shape* caret = tvg::Shape::gen();
     caret->appendRect(caret_x, caret_y + 2, kCaretWidth,

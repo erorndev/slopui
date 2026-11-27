@@ -145,6 +145,33 @@ std::string Window::ClipboardText() const {
   return clipboard_text;
 }
 
+void Window::SetClipboardText(std::string_view utf8_text) const {
+  std::string with_carriage_returns;
+  with_carriage_returns.reserve(utf8_text.size());
+  for (char character : utf8_text) {
+    if (character == '\n') with_carriage_returns.push_back('\r');
+    if (character != '\r') with_carriage_returns.push_back(character);
+  }
+  const int source_length = static_cast<int>(with_carriage_returns.size());
+  const int wide_length = MultiByteToWideChar(
+      CP_UTF8, 0, with_carriage_returns.data(), source_length, nullptr, 0);
+  HGLOBAL memory = GlobalAlloc(
+      GMEM_MOVEABLE, (static_cast<size_t>(wide_length) + 1) * sizeof(wchar_t));
+  if (!memory) return;
+  auto* wide_text = static_cast<wchar_t*>(GlobalLock(memory));
+  MultiByteToWideChar(CP_UTF8, 0, with_carriage_returns.data(), source_length,
+                      wide_text, wide_length);
+  wide_text[wide_length] = L'\0';
+  GlobalUnlock(memory);
+  if (!OpenClipboard(hwnd_)) {
+    GlobalFree(memory);
+    return;
+  }
+  EmptyClipboard();
+  if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+  CloseClipboard();
+}
+
 LRESULT CALLBACK Window::WindowProcedure(HWND hwnd, UINT message, WPARAM wparam,
                                          LPARAM lparam) {
   if (message == WM_NCCREATE) {
@@ -228,7 +255,8 @@ LRESULT Window::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       SetFocus(hwnd_);
       SetCapture(hwnd_);
       handler_->OnMouseDown(static_cast<float>(GET_X_LPARAM(lparam)),
-                            static_cast<float>(GET_Y_LPARAM(lparam)));
+                            static_cast<float>(GET_Y_LPARAM(lparam)),
+                            (wparam & MK_SHIFT) != 0);
       return 0;
     case WM_LBUTTONUP:
       ReleaseCapture();

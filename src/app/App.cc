@@ -19,6 +19,7 @@ constexpr std::string_view kComposerFieldId = "composer";
 constexpr std::string_view kSystemPromptFieldId = "system-prompt";
 constexpr std::string_view kMessageViewportId = "message-viewport";
 constexpr std::string_view kSettingsViewportId = "settings-viewport";
+constexpr std::string_view kTextNodeSuffix = "#text";
 constexpr std::string_view kConversationIdPrefix = "conversation:";
 constexpr std::string_view kStepperIdPrefix = "stepper:";
 constexpr std::string_view kToggleIdPrefix = "toggle:";
@@ -110,14 +111,6 @@ std::string FormatDecimal(float value) {
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "%.2f", value);
   return buffer;
-}
-
-void RemoveLastCodePoint(std::string* text) {
-  while (!text->empty() &&
-         (static_cast<unsigned char>(text->back()) & 0xC0) == 0x80) {
-    text->pop_back();
-  }
-  if (!text->empty()) text->pop_back();
 }
 
 std::string TrimWhitespace(std::string_view text) {
@@ -525,6 +518,32 @@ ui::Node* App::BuildLabel(ui::Node* parent, std::string text,
   label->style().wraps_text = wraps_text;
   label->EnableTextMeasurement();
   return label;
+}
+
+ui::Node* App::BuildEditableText(ui::Node* parent, std::string_view field_id,
+                                 const std::string& text,
+                                 const ui::TextSelection& selection,
+                                 std::string placeholder) {
+  const bool focused = focused_field_id_ == field_id;
+  ui::Node* text_node =
+      parent->AddChild(std::string(field_id) + std::string(kTextNodeSuffix));
+  ui::NodeStyle& style = text_node->style();
+  style.text = text;
+  style.font = body_font_.get();
+  style.text_color = palette_.text_primary;
+  style.wraps_text = true;
+  style.placeholder = std::move(placeholder);
+  style.placeholder_color = palette_.text_tertiary;
+  style.cursor = CursorKind::kIBeam;
+  style.shows_caret = focused;
+  style.caret_byte = std::min(selection.caret, text.size());
+  if (focused) {
+    style.selection_begin = std::min(selection.begin(), text.size());
+    style.selection_end = std::min(selection.end(), text.size());
+    style.selection_color = palette_.text_selection;
+  }
+  text_node->EnableTextMeasurement();
+  return text_node;
 }
 
 ui::Node* App::BuildIcon(ui::Node* parent, ui::IconKind icon, ui::Color color,
@@ -1068,15 +1087,13 @@ void App::BuildComposer(ui::Node* parent) {
   }
   field_box->style().cursor = CursorKind::kIBeam;
 
-  ui::Node* field_text = BuildLabel(field_box, composer_text_, body_font_.get(),
-                                    palette_.text_primary, true);
+  ui::Node* field_text =
+      BuildEditableText(field_box, kComposerFieldId, composer_text_,
+                        composer_selection_, "Message Lale");
   YGNodeStyleSetMaxHeight(field_text->yoga_node(),
                           theme::kComposerMaximumTextHeight);
   YGNodeStyleSetMinHeight(field_text->yoga_node(), 22);
   YGNodeStyleSetMargin(field_text->yoga_node(), YGEdgeTop, theme::Spacing(1));
-  field_text->style().placeholder = "Message Lale";
-  field_text->style().placeholder_color = palette_.text_tertiary;
-  field_text->style().shows_caret = composer_focused;
 
   ui::Node* toolbar = field_box->AddChild();
   MakeRow(toolbar->yoga_node());
@@ -1359,12 +1376,9 @@ void App::BuildSamplingSettings(ui::Node* column) {
     prompt_card->style().outer_ring = palette_.focus_halo;
     prompt_card->style().outer_ring_width = 3;
   }
-  ui::Node* prompt_text =
-      BuildLabel(prompt_field, generation_settings_.system_prompt,
-                 body_font_.get(), palette_.text_primary, true);
-  prompt_text->style().placeholder = "No system prompt";
-  prompt_text->style().placeholder_color = palette_.text_tertiary;
-  prompt_text->style().shows_caret = system_prompt_focused;
+  BuildEditableText(prompt_field, kSystemPromptFieldId,
+                    generation_settings_.system_prompt,
+                    system_prompt_selection_, "No system prompt");
 
   ui::Node* reset_row = column->AddChild();
   MakeRow(reset_row->yoga_node());
@@ -1519,14 +1533,6 @@ bool App::IsTextField(std::string_view node_id) const {
   return node_id == kComposerFieldId || node_id == kSystemPromptFieldId;
 }
 
-std::string* App::FocusedText() {
-  if (focused_field_id_ == kComposerFieldId) return &composer_text_;
-  if (focused_field_id_ == kSystemPromptFieldId) {
-    return &generation_settings_.system_prompt;
-  }
-  return nullptr;
-}
-
 void App::HandleClick(const std::string& node_id) {
   if (node_id == kMinimizeButtonId) {
     window_.Minimize();
@@ -1674,6 +1680,8 @@ void App::SendComposerMessage() {
   }
   conversation.messages.push_back({MessageRole::kUser, message_text});
   composer_text_.clear();
+  composer_selection_ = {};
+  composer_history_.Clear();
   message_scroll_pinned_to_bottom_ = true;
   if (!ModelLoaded()) {
     conversation.messages.push_back(
@@ -1718,6 +1726,8 @@ void App::StartNewConversation() {
     if (generating_) ++generating_conversation_index_;
   }
   composer_text_.clear();
+  composer_selection_ = {};
+  composer_history_.Clear();
   focused_field_id_ = std::string(kComposerFieldId);
   message_scroll_pinned_to_bottom_ = true;
 }
@@ -1739,12 +1749,187 @@ void App::OnSystemAppearanceChanged() { ApplySystemAppearance(); }
 void App::OnPaint() { RenderFrame(); }
 
 void App::OnMouseMove(float x, float y) {
+  if (dragging_text_selection_) {
+    PlaceCaretAtPoint(x / device_pixels_per_point_,
+                      y / device_pixels_per_point_, true);
+    Invalidate();
+    return;
+  }
   const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string hit_id = hit ? hit->id() : std::string();
   if (hit_id != hovered_node_id_) {
     hovered_node_id_ = std::move(hit_id);
     Invalidate();
   }
+}
+
+std::optional<TextFieldEditor> App::FocusedEditor() {
+  TextFieldEditor editor;
+  if (focused_field_id_ == kComposerFieldId) {
+    editor = {&composer_text_, &composer_selection_, &composer_history_};
+  } else if (focused_field_id_ == kSystemPromptFieldId) {
+    editor = {&generation_settings_.system_prompt, &system_prompt_selection_,
+              &system_prompt_history_};
+  } else {
+    return std::nullopt;
+  }
+  ui::ClampSelection(*editor.text, editor.selection);
+  return editor;
+}
+
+const ui::Node* App::FocusedTextNode() const {
+  if (!interface_root_ || focused_field_id_.empty()) return nullptr;
+  return interface_root_->FindById(focused_field_id_ +
+                                   std::string(kTextNodeSuffix));
+}
+
+std::vector<ui::TextLine> App::FocusedFieldLines() const {
+  const ui::Node* text_node = FocusedTextNode();
+  if (!text_node || !text_node->style().font) return {{0, 0, 0}};
+  const ui::NodeStyle& style = text_node->style();
+  return ui::WrapForEditing(
+      *style.font, style.text,
+      ui::TextWrapWidth(style, text_node->bounds().width));
+}
+
+void App::PlaceCaretAtPoint(float logical_x, float logical_y, bool extend) {
+  std::optional<TextFieldEditor> editor = FocusedEditor();
+  const ui::Node* text_node = FocusedTextNode();
+  if (!editor || !text_node) return;
+  const ui::Rect& bounds = text_node->bounds();
+  const size_t byte = ui::ByteAtPoint(*text_node->style().font, *editor->text,
+                                      FocusedFieldLines(), logical_x - bounds.x,
+                                      logical_y - bounds.y);
+  ui::MoveCaret(editor->selection, byte, extend);
+  preferred_caret_x_ = -1;
+  ResetCaretBlink();
+}
+
+void App::EditFocusedText(std::string_view replacement, bool is_typing) {
+  std::optional<TextFieldEditor> editor = FocusedEditor();
+  if (!editor) return;
+  if (replacement.empty() && editor->selection->empty()) return;
+  editor->history->Record(*editor->text, *editor->selection, is_typing);
+  ui::ReplaceSelection(editor->text, editor->selection, replacement);
+  preferred_caret_x_ = -1;
+  ResetCaretBlink();
+}
+
+bool App::HandleEditingKey(UINT virtual_key, bool control_down,
+                           bool shift_down) {
+  std::optional<TextFieldEditor> editor = FocusedEditor();
+  if (!editor) return false;
+  std::string& text = *editor->text;
+  ui::TextSelection& selection = *editor->selection;
+  const bool keeps_preferred_x = virtual_key == VK_UP || virtual_key == VK_DOWN;
+  if (!keeps_preferred_x) preferred_caret_x_ = -1;
+
+  switch (virtual_key) {
+    case VK_LEFT:
+      if (!shift_down && !selection.empty()) {
+        ui::MoveCaret(&selection, selection.begin(), false);
+      } else {
+        ui::MoveCaret(&selection,
+                      control_down
+                          ? ui::PreviousWordStart(text, selection.caret)
+                          : ui::PreviousCharacter(text, selection.caret),
+                      shift_down);
+      }
+      break;
+    case VK_RIGHT:
+      if (!shift_down && !selection.empty()) {
+        ui::MoveCaret(&selection, selection.end(), false);
+      } else {
+        ui::MoveCaret(&selection,
+                      control_down ? ui::NextWordEnd(text, selection.caret)
+                                   : ui::NextCharacter(text, selection.caret),
+                      shift_down);
+      }
+      break;
+    case VK_HOME:
+      ui::MoveCaret(&selection,
+                    control_down ? 0
+                                 : ui::VisualLineStart(FocusedFieldLines(),
+                                                       selection.caret),
+                    shift_down);
+      break;
+    case VK_END:
+      ui::MoveCaret(&selection,
+                    control_down ? text.size()
+                                 : ui::VisualLineEnd(text, FocusedFieldLines(),
+                                                     selection.caret),
+                    shift_down);
+      break;
+    case VK_UP:
+    case VK_DOWN: {
+      const ui::Node* text_node = FocusedTextNode();
+      if (!text_node) return true;
+      const ui::Font& font = *text_node->style().font;
+      const std::vector<ui::TextLine> lines = FocusedFieldLines();
+      const ui::CaretLocation location =
+          ui::LocateCaret(font, text, lines, selection.caret);
+      if (preferred_caret_x_ < 0) preferred_caret_x_ = location.x;
+      const bool moving_up = virtual_key == VK_UP;
+      size_t target_byte = 0;
+      if (moving_up && location.line_index == 0) {
+        target_byte = 0;
+      } else if (!moving_up && location.line_index + 1 >= lines.size()) {
+        target_byte = text.size();
+      } else {
+        const size_t target_line =
+            moving_up ? location.line_index - 1 : location.line_index + 1;
+        target_byte = ui::ByteAtPoint(
+            font, text, lines, preferred_caret_x_,
+            (static_cast<float>(target_line) + 0.5f) * font.line_height());
+      }
+      ui::MoveCaret(&selection, target_byte, shift_down);
+      break;
+    }
+    case VK_BACK:
+      if (selection.empty()) {
+        selection.anchor = control_down
+                               ? ui::PreviousWordStart(text, selection.caret)
+                               : ui::PreviousCharacter(text, selection.caret);
+      }
+      EditFocusedText({}, false);
+      return true;
+    case VK_DELETE:
+      if (selection.empty()) {
+        selection.anchor = control_down
+                               ? ui::NextWordEnd(text, selection.caret)
+                               : ui::NextCharacter(text, selection.caret);
+      }
+      EditFocusedText({}, false);
+      return true;
+    case VK_RETURN:
+      if (focused_field_id_ == kComposerFieldId && !shift_down) {
+        SendComposerMessage();
+      } else {
+        EditFocusedText("\n", false);
+      }
+      return true;
+    default:
+      if (!control_down) return false;
+      if (virtual_key == 'A') {
+        selection.anchor = 0;
+        selection.caret = text.size();
+      } else if (virtual_key == 'C' || virtual_key == 'X') {
+        if (selection.empty()) return true;
+        window_.SetClipboardText(ui::SelectedText(text, selection));
+        if (virtual_key == 'X') EditFocusedText({}, false);
+      } else if (virtual_key == 'V') {
+        EditFocusedText(NormalizeLineEndings(window_.ClipboardText()), false);
+      } else if (virtual_key == 'Z' && !shift_down) {
+        editor->history->Undo(&text, &selection);
+      } else if (virtual_key == 'Y' || virtual_key == 'Z') {
+        editor->history->Redo(&text, &selection);
+      } else {
+        return false;
+      }
+      break;
+  }
+  ResetCaretBlink();
+  return true;
 }
 
 void App::OnMouseLeave() {
@@ -1754,11 +1939,18 @@ void App::OnMouseLeave() {
   }
 }
 
-void App::OnMouseDown(float x, float y) {
+void App::OnMouseDown(float x, float y, bool shift_down) {
   const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string hit_id = hit ? hit->id() : std::string();
+  if (hit_id.ends_with(kTextNodeSuffix)) {
+    hit_id.resize(hit_id.size() - kTextNodeSuffix.size());
+  }
   if (IsTextField(hit_id)) {
+    const bool extend = shift_down && focused_field_id_ == hit_id;
     focused_field_id_ = hit_id;
+    PlaceCaretAtPoint(x / device_pixels_per_point_,
+                      y / device_pixels_per_point_, extend);
+    dragging_text_selection_ = true;
   } else if (hit_id != "send") {
     focused_field_id_.clear();
   }
@@ -1768,6 +1960,7 @@ void App::OnMouseDown(float x, float y) {
 }
 
 void App::OnMouseUp(float x, float y) {
+  dragging_text_selection_ = false;
   const ui::Node* hit = HitTestDevicePoint(x, y);
   std::string released_id = hit ? hit->id() : std::string();
   std::string pressed_id = std::move(pressed_node_id_);
@@ -1801,10 +1994,7 @@ void App::OnMouseWheel(float x, float y, float wheel_steps) {
 }
 
 void App::OnText(const std::string& utf8_text) {
-  std::string* focused_text = FocusedText();
-  if (!focused_text) return;
-  focused_text->append(utf8_text);
-  ResetCaretBlink();
+  EditFocusedText(utf8_text, true);
 }
 
 void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
@@ -1831,22 +2021,7 @@ void App::OnKey(UINT virtual_key, bool control_down, bool shift_down) {
     Invalidate();
     return;
   }
-  std::string* focused_text = FocusedText();
-  if (!focused_text) return;
-  if (virtual_key == VK_BACK) {
-    RemoveLastCodePoint(focused_text);
-  } else if (virtual_key == VK_RETURN) {
-    if (focused_field_id_ == kComposerFieldId && !shift_down) {
-      SendComposerMessage();
-    } else {
-      focused_text->push_back('\n');
-    }
-  } else if (virtual_key == 'V' && control_down) {
-    focused_text->append(NormalizeLineEndings(window_.ClipboardText()));
-  } else {
-    return;
-  }
-  ResetCaretBlink();
+  if (HandleEditingKey(virtual_key, control_down, shift_down)) Invalidate();
 }
 
 void App::OnCaretTimer() {

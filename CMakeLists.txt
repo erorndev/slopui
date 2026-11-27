@@ -24,7 +24,8 @@ add_executable(lale WIN32
     src/ui/Markdown.cc
     src/ui/Node.cc
     src/ui/Renderer.cc
-    src/ui/RichText.cc)
+    src/ui/RichText.cc
+    src/ui/TextEditing.cc)
 target_include_directories(lale PRIVATE src)
 target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi dwmapi ole32 uuid shell32 llama)
 target_compile_definitions(lale PRIVATE UNICODE _UNICODE)

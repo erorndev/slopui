@@ -1,5 +1,6 @@
 #include <SDL3/SDL.h>
 
+#include <cstddef>
 #include <string>
 #include <system_error>
 
@@ -15,7 +16,6 @@
 #endif
 #include <windows.h>
 #else
-#include <dlfcn.h>
 #include <link.h>
 #endif
 
@@ -126,16 +126,26 @@ std::filesystem::path LoadedLibraryDirectory(std::string_view library_name) {
   if (length == 0 || length >= MAX_PATH) return {};
   return std::filesystem::path(module_path, module_path + length).parent_path();
 #else
-  const std::string file_name = "lib" + std::string(library_name) + ".so";
-  void* library = dlopen(file_name.c_str(), RTLD_NOW | RTLD_NOLOAD);
-  if (!library) return {};
-  link_map* library_map = nullptr;
-  std::filesystem::path directory;
-  if (dlinfo(library, RTLD_DI_LINKMAP, &library_map) == 0 && library_map) {
-    directory = std::filesystem::path(library_map->l_name).parent_path();
-  }
-  dlclose(library);
-  return directory;
+  struct SearchState {
+    std::string prefix;
+    std::filesystem::path directory;
+  };
+  SearchState state{"lib" + std::string(library_name) + ".so", {}};
+  dl_iterate_phdr(
+      [](dl_phdr_info* info, size_t, void* data) -> int {
+        if (!info->dlpi_name || !*info->dlpi_name) return 0;
+        auto* search = static_cast<SearchState*>(data);
+        const std::filesystem::path path(info->dlpi_name);
+        const std::string file_name = path.filename().string();
+        if (file_name == search->prefix ||
+            file_name.starts_with(search->prefix + ".")) {
+          search->directory = path.parent_path();
+          return 1;
+        }
+        return 0;
+      },
+      &state);
+  return state.directory;
 #endif
 }
 

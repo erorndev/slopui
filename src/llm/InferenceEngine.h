@@ -37,6 +37,7 @@ struct PromptMessage {
 };
 
 enum class EngineEventKind {
+  kModelLoadProgress,
   kModelLoaded,
   kModelLoadFailed,
   kModelUnloaded,
@@ -48,6 +49,7 @@ enum class EngineEventKind {
 struct EngineEvent {
   EngineEventKind kind;
   std::string text;
+  float progress = 0;
 };
 
 class InferenceEngine {
@@ -77,6 +79,8 @@ class InferenceEngine {
   void RunWorker();
   void Enqueue(Command command);
   void Publish(EngineEventKind kind, std::string text = {});
+  void PublishLoadProgress(float progress);
+  static bool ReportLoadProgress(float progress, void* engine);
   void LoadOnWorker(const ModelOptions& options);
   void UnloadOnWorker();
   void GenerateOnWorker(const std::vector<PromptMessage>& messages,
@@ -90,6 +94,7 @@ class InferenceEngine {
   std::mutex event_mutex_;
   std::vector<EngineEvent> pending_events_;
   std::atomic<bool> cancel_requested_ = false;
+  int last_reported_load_percent_ = -1;
 
   llama_model* model_ = nullptr;
   llama_context* context_ = nullptr;

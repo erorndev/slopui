@@ -127,6 +127,10 @@ class App : public WindowHandler {
                       float size);
   ui::Node* BuildKeyHint(ui::Node* parent, std::string keys);
   ui::Node* BuildStatusDot(ui::Node* parent, ui::Color color);
+  void BuildProgressBar(ui::Node* parent, float fraction, float height);
+  void BuildRecentModels(ui::Node* column);
+  void RememberRecentModel(const std::string& model_path);
+  std::string ModelLoadingText() const;
   void BuildNotice(ui::Node* parent, const std::string& text);
   ui::Node* BuildLabel(ui::Node* parent, std::string text, const ui::Font* font,
                        ui::Color color, bool wraps_text = false);
@@ -204,6 +208,8 @@ class App : public WindowHandler {
   std::string model_error_;
   llm::ModelOptions requested_model_options_;
   int pending_model_request_count_ = 0;
+  float model_load_progress_ = 0;
+  std::vector<std::string> recent_model_paths_;
   bool generating_ = false;
   size_t generating_conversation_index_ = 0;
   std::string focused_field_id_;

@@ -56,6 +56,11 @@ void ApplyEntry(std::string_view key, std::string_view value,
     generation.stream_tokens = value == "true";
   } else if (key == "system_prompt") {
     generation.system_prompt = UnescapeLineValue(value);
+  } else if (key == "recent_model") {
+    if (settings->recent_model_paths.size() <
+        StoredSettings::kMaximumRecentModels) {
+      settings->recent_model_paths.push_back(UnescapeLineValue(value));
+    }
   } else if (key == "theme") {
     if (value == kThemeSystem) settings->theme = ThemePreference::kSystem;
     if (value == kThemeLight) settings->theme = ThemePreference::kLight;
@@ -108,6 +113,9 @@ bool SaveStoredSettings(const StoredSettings& settings,
            << "system_prompt=" << EscapeLineValue(generation.system_prompt)
            << '\n'
            << "theme=" << ThemeKey(settings.theme) << '\n';
+  for (const std::string& recent_path : settings.recent_model_paths) {
+    contents << "recent_model=" << EscapeLineValue(recent_path) << '\n';
+  }
   return WriteFileAtomically(file_path, contents.str());
 }
 

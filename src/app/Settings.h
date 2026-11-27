@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace lale {
 
@@ -29,6 +30,9 @@ enum class ThemePreference { kSystem, kLight, kDark };
 struct StoredSettings {
   GenerationSettings generation;
   ThemePreference theme = ThemePreference::kSystem;
+  std::vector<std::string> recent_model_paths;
+
+  static constexpr size_t kMaximumRecentModels = 5;
 
   bool operator==(const StoredSettings&) const = default;
 };

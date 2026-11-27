@@ -18,6 +18,7 @@ namespace {
 constexpr std::string_view kComposerFieldId = "composer";
 constexpr std::string_view kSystemPromptFieldId = "system-prompt";
 constexpr std::string_view kRenameFieldId = "rename-field";
+constexpr std::string_view kRecentModelIdPrefix = "recent-model:";
 constexpr std::string_view kCopyMessageIdPrefix = "copy-message:";
 constexpr std::string_view kCopyCodeIdPrefix = "copy-code:";
 constexpr std::string_view kMessageViewportId = "message-viewport";
@@ -191,6 +192,7 @@ App::App()
   saved_settings_ = LoadStoredSettings(settings_file_path_);
   generation_settings_ = saved_settings_.generation;
   theme_preference_ = saved_settings_.theme;
+  recent_model_paths_ = saved_settings_.recent_model_paths;
 }
 
 App::~App() {
@@ -203,7 +205,8 @@ void App::SaveConversationHistory() {
 }
 
 void App::SaveSettingsIfChanged() {
-  StoredSettings current{generation_settings_, theme_preference_};
+  StoredSettings current{generation_settings_, theme_preference_,
+                         recent_model_paths_};
   if (current == saved_settings_) return;
   if (SaveStoredSettings(current, settings_file_path_)) {
     saved_settings_ = std::move(current);
@@ -250,6 +253,22 @@ llm::ModelOptions App::CurrentModelOptions() const {
 
 bool App::ModelLoaded() const { return model_state_ == ModelState::kLoaded; }
 
+void App::RememberRecentModel(const std::string& model_path) {
+  if (model_path.empty()) return;
+  std::erase(recent_model_paths_, model_path);
+  recent_model_paths_.insert(recent_model_paths_.begin(), model_path);
+  if (recent_model_paths_.size() > StoredSettings::kMaximumRecentModels) {
+    recent_model_paths_.resize(StoredSettings::kMaximumRecentModels);
+  }
+  SaveSettingsIfChanged();
+}
+
+std::string App::ModelLoadingText() const {
+  if (model_load_progress_ >= 1) return "Preparing the model…";
+  return "Loading the model… " +
+         std::to_string(static_cast<int>(model_load_progress_ * 100)) + "%";
+}
+
 void App::RequestModelLoad() {
   llm::ModelOptions options = CurrentModelOptions();
   const bool unchanged = options == requested_model_options_ &&
@@ -264,6 +283,7 @@ void App::RequestModelLoad() {
     inference_engine_->UnloadModel();
   } else {
     model_state_ = ModelState::kLoading;
+    model_load_progress_ = 0;
     inference_engine_->LoadModel(options);
   }
   Invalidate();
@@ -283,12 +303,18 @@ void App::OnWake() {
 void App::HandleEngineEvent(const llm::EngineEvent& event) {
   using llm::EngineEventKind;
   switch (event.kind) {
+    case EngineEventKind::kModelLoadProgress:
+      if (pending_model_request_count_ == 1) {
+        model_load_progress_ = event.progress;
+      }
+      return;
     case EngineEventKind::kModelLoaded:
     case EngineEventKind::kModelLoadFailed:
     case EngineEventKind::kModelUnloaded:
       if (--pending_model_request_count_ > 0) return;
       if (event.kind == EngineEventKind::kModelLoaded) {
         model_state_ = ModelState::kLoaded;
+        RememberRecentModel(requested_model_options_.model_path);
       } else if (event.kind == EngineEventKind::kModelLoadFailed) {
         model_state_ = ModelState::kFailed;
         model_error_ = event.text;
@@ -600,6 +626,20 @@ ui::Node* App::BuildStatusDot(ui::Node* parent, ui::Color color) {
   return dot;
 }
 
+void App::BuildProgressBar(ui::Node* parent, float fraction, float height) {
+  ui::Node* track = parent->AddChild();
+  YGNodeStyleSetHeight(track->yoga_node(), height);
+  YGNodeStyleSetFlexShrink(track->yoga_node(), 0);
+  YGNodeStyleSetFlexDirection(track->yoga_node(), YGFlexDirectionRow);
+  track->style().corner_radius = height / 2;
+  track->style().background = palette_.border;
+  ui::Node* fill = track->AddChild();
+  YGNodeStyleSetWidthPercent(fill->yoga_node(),
+                             std::clamp(fraction, 0.0f, 1.0f) * 100);
+  fill->style().corner_radius = height / 2;
+  fill->style().background = palette_.high_contrast;
+}
+
 void App::BuildNotice(ui::Node* parent, const std::string& text) {
   ui::Node* notice = parent->AddChild();
   YGNodeStyleSetFlexDirection(notice->yoga_node(), YGFlexDirectionRow);
@@ -793,7 +833,11 @@ void App::BuildChatArea(ui::Node* parent) {
   YGNodeStyleSetFlexShrink(chat_area->yoga_node(), 1);
   YGNodeStyleSetMinWidth(chat_area->yoga_node(), 0);
   BuildTopBar(chat_area);
-  AddHorizontalRule(chat_area, palette_.border);
+  if (model_state_ == ModelState::kLoading) {
+    BuildProgressBar(chat_area, model_load_progress_, 1);
+  } else {
+    AddHorizontalRule(chat_area, palette_.border);
+  }
   BuildMessageList(chat_area);
   BuildComposer(chat_area);
 }
@@ -886,6 +930,15 @@ void App::BuildTopBar(ui::Node* parent) {
       label_strong_font_.get(), palette_.text_primary);
   YGNodeStyleSetMaxWidth(model_name->yoga_node(), 240);
   model_name->style().elides_text = true;
+  if (model_state_ == ModelState::kLoading) {
+    BuildLabel(
+        model_picker,
+        model_load_progress_ >= 1
+            ? std::string("…")
+            : std::to_string(static_cast<int>(model_load_progress_ * 100)) +
+                  "%",
+        monospace_caption_font_.get(), palette_.text_secondary);
+  }
   BuildIcon(model_picker, ui::IconKind::kChevronDown, palette_.text_secondary,
             12);
 }
@@ -1159,10 +1212,12 @@ void App::BuildEmptyState(ui::Node* parent) {
   YGNodeStyleSetPadding(empty_state->yoga_node(), YGEdgeHorizontal,
                         theme::Spacing(6));
   const bool model_loaded = ModelLoaded();
-  BuildLabel(
-      empty_state,
-      model_loaded ? "What would you like to ask?" : "Choose a model to begin",
-      title_font_.get(), palette_.text_primary);
+  const bool model_loading = model_state_ == ModelState::kLoading;
+  BuildLabel(empty_state,
+             model_loaded    ? "What would you like to ask?"
+             : model_loading ? "Getting the model ready"
+                             : "Choose a model to begin",
+             title_font_.get(), palette_.text_primary);
   AddVerticalSpace(empty_state, theme::Spacing(3));
   BuildLabel(empty_state, "Lale runs llama.cpp models locally on this PC.",
              body_font_.get(), palette_.text_secondary);
@@ -1170,6 +1225,19 @@ void App::BuildEmptyState(ui::Node* parent) {
   BuildLabel(empty_state, "Nothing you type leaves your computer.",
              body_font_.get(), palette_.text_secondary);
   if (model_loaded) return;
+  if (model_loading) {
+    AddVerticalSpace(empty_state, theme::Spacing(6));
+    ui::Node* progress = empty_state->AddChild();
+    YGNodeStyleSetWidth(progress->yoga_node(), 280);
+    YGNodeStyleSetAlignItems(progress->yoga_node(), YGAlignCenter);
+    YGNodeStyleSetGap(progress->yoga_node(), YGGutterRow, theme::Spacing(2));
+    ui::Node* bar_holder = progress->AddChild();
+    YGNodeStyleSetWidthPercent(bar_holder->yoga_node(), 100);
+    BuildProgressBar(bar_holder, model_load_progress_, 4);
+    BuildLabel(progress, ModelLoadingText(), caption_font_.get(),
+               palette_.text_tertiary);
+    return;
+  }
 
   AddVerticalSpace(empty_state, theme::Spacing(6));
   ui::Node* actions = empty_state->AddChild();
@@ -1421,12 +1489,20 @@ void App::BuildModelSettings(ui::Node* column) {
       model_chosen ? ButtonStyle::kSecondary : ButtonStyle::kPrimary);
 
   if (model_state_ == ModelState::kLoading) {
-    AddVerticalSpace(column, theme::Spacing(4));
-    BuildNotice(column, "Loading the model…");
+    BuildSettingsRowSeparator(file_card);
+    ui::Node* progress_row = file_card->AddChild();
+    YGNodeStyleSetGap(progress_row->yoga_node(), YGGutterRow,
+                      theme::Spacing(2));
+    SetPadding(progress_row->yoga_node(), theme::Spacing(4), theme::Spacing(3));
+    BuildLabel(progress_row, ModelLoadingText(), caption_font_.get(),
+               palette_.text_secondary);
+    BuildProgressBar(progress_row, model_load_progress_, 4);
   } else if (model_state_ == ModelState::kFailed) {
     AddVerticalSpace(column, theme::Spacing(4));
     BuildNotice(column, model_error_);
   }
+
+  BuildRecentModels(column);
 
   ui::Node* runtime_card = BuildSettingsSection(column, "Runtime");
   const int gpu_layers = generation_settings_.gpu_layer_count;
@@ -1457,6 +1533,48 @@ void App::BuildModelSettings(ui::Node* column) {
   BuildLabel(column,
              "Runtime changes reload the model when you leave Settings.",
              caption_font_.get(), palette_.text_tertiary, true);
+}
+
+void App::BuildRecentModels(ui::Node* column) {
+  std::vector<size_t> other_model_indices;
+  for (size_t index = 0; index < recent_model_paths_.size(); ++index) {
+    if (recent_model_paths_[index] != generation_settings_.model_path) {
+      other_model_indices.push_back(index);
+    }
+  }
+  if (other_model_indices.empty()) return;
+  ui::Node* recent_card = BuildSettingsSection(column, "Recent models");
+  for (size_t position = 0; position < other_model_indices.size(); ++position) {
+    if (position > 0) BuildSettingsRowSeparator(recent_card);
+    const size_t index = other_model_indices[position];
+    const std::string& recent_path = recent_model_paths_[index];
+    const std::string row_id =
+        std::string(kRecentModelIdPrefix) + std::to_string(index);
+    ui::Node* row = recent_card->AddChild(row_id);
+    MakeRow(row->yoga_node());
+    YGNodeStyleSetGap(row->yoga_node(), YGGutterColumn, theme::Spacing(3));
+    SetPadding(row->yoga_node(), theme::Spacing(4), theme::Spacing(3));
+    row->style().cursor = CursorKind::kHand;
+    row->style().background =
+        InteractiveFill(row_id, theme::kTransparent, palette_.overlay_hover,
+                        palette_.overlay_pressed);
+    ui::Node* text = row->AddChild();
+    YGNodeStyleSetFlexGrow(text->yoga_node(), 1);
+    YGNodeStyleSetFlexShrink(text->yoga_node(), 1);
+    YGNodeStyleSetMinWidth(text->yoga_node(), 0);
+    YGNodeStyleSetGap(text->yoga_node(), YGGutterRow, theme::Spacing(1));
+    BuildLabel(text, FileNameFromPath(recent_path), label_strong_font_.get(),
+               palette_.text_primary)
+        ->style()
+        .elides_text = true;
+    BuildLabel(text, recent_path, monospace_caption_font_.get(),
+               palette_.text_secondary)
+        ->style()
+        .elides_text = true;
+    BuildLabel(row, "Use", label_font_.get(),
+               hovered_node_id_ == row_id ? palette_.text_primary
+                                          : palette_.text_secondary);
+  }
 }
 
 void App::BuildSamplingSettings(ui::Node* column) {
@@ -1720,6 +1838,13 @@ void App::HandleClick(const std::string& node_id) {
     if (key == "shortcuts") OpenSettings(SettingsSection::kShortcuts);
   } else if (node_id == "model-choose") {
     ChooseModelFile();
+  } else if (StartsWith(node_id, kRecentModelIdPrefix)) {
+    const size_t index =
+        std::stoul(node_id.substr(kRecentModelIdPrefix.size()));
+    if (index < recent_model_paths_.size()) {
+      generation_settings_.model_path = recent_model_paths_[index];
+      RequestModelLoad();
+    }
   } else if (node_id == "model-clear") {
     generation_settings_.model_path.clear();
     RequestModelLoad();

@@ -149,7 +149,27 @@ void InferenceEngine::Publish(EngineEventKind kind, std::string text) {
   wake_owner_();
 }
 
+void InferenceEngine::PublishLoadProgress(float progress) {
+  {
+    std::lock_guard lock(event_mutex_);
+    pending_events_.push_back(
+        {EngineEventKind::kModelLoadProgress, {}, progress});
+  }
+  wake_owner_();
+}
+
+bool InferenceEngine::ReportLoadProgress(float progress, void* engine_pointer) {
+  auto* engine = static_cast<InferenceEngine*>(engine_pointer);
+  const int percent = static_cast<int>(progress * 100);
+  if (percent != engine->last_reported_load_percent_) {
+    engine->last_reported_load_percent_ = percent;
+    engine->PublishLoadProgress(progress);
+  }
+  return !engine->cancel_requested_;
+}
+
 void InferenceEngine::RunWorker() {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
   while (true) {
     Command command;
     {
@@ -189,8 +209,15 @@ void InferenceEngine::LoadOnWorker(const ModelOptions& options) {
   cancel_requested_ = false;
   llama_model_params model_parameters = llama_model_default_params();
   model_parameters.n_gpu_layers = options.gpu_layer_count;
+  model_parameters.progress_callback = ReportLoadProgress;
+  model_parameters.progress_callback_user_data = this;
+  last_reported_load_percent_ = -1;
   model_ =
       llama_model_load_from_file(options.model_path.c_str(), model_parameters);
+  if (!model_ && cancel_requested_) {
+    Publish(EngineEventKind::kModelLoadFailed, "Loading was cancelled.");
+    return;
+  }
   if (!model_) {
     Publish(EngineEventKind::kModelLoadFailed,
             "Could not load this file. It may be damaged or not a GGUF "
@@ -224,20 +251,25 @@ std::string InferenceEngine::FormatPrompt(
   for (const PromptMessage& message : messages) {
     chat_messages.push_back({message.role.c_str(), message.content.c_str()});
   }
-  const char* chat_template = llama_model_chat_template(model_, nullptr);
-  if (!chat_template) chat_template = "chatml";
-  std::vector<char> formatted(4096);
-  int length = llama_chat_apply_template(
-      chat_template, chat_messages.data(), chat_messages.size(), true,
-      formatted.data(), static_cast<int32_t>(formatted.size()));
-  if (length > static_cast<int>(formatted.size())) {
-    formatted.resize(static_cast<size_t>(length));
-    length = llama_chat_apply_template(
+  auto apply_template = [&](const char* chat_template) -> std::string {
+    std::vector<char> formatted(4096);
+    int length = llama_chat_apply_template(
         chat_template, chat_messages.data(), chat_messages.size(), true,
         formatted.data(), static_cast<int32_t>(formatted.size()));
+    if (length > static_cast<int>(formatted.size())) {
+      formatted.resize(static_cast<size_t>(length));
+      length = llama_chat_apply_template(
+          chat_template, chat_messages.data(), chat_messages.size(), true,
+          formatted.data(), static_cast<int32_t>(formatted.size()));
+    }
+    if (length < 0) return {};
+    return std::string(formatted.data(), static_cast<size_t>(length));
+  };
+  if (const char* model_template = llama_model_chat_template(model_, nullptr)) {
+    std::string prompt = apply_template(model_template);
+    if (!prompt.empty()) return prompt;
   }
-  if (length < 0) return {};
-  return std::string(formatted.data(), static_cast<size_t>(length));
+  return apply_template("chatml");
 }
 
 void InferenceEngine::GenerateOnWorker(

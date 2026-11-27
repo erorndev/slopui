@@ -408,11 +408,18 @@ void SdlWindow::HandleEvent(const SDL_Event& event) {
       if (handler_) UpdateCursor(x, y);
       return;
     }
-    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
       if (event.button.button != SDL_BUTTON_LEFT) return;
-      handler_->OnMouseDown(event.button.x * density, event.button.y * density,
-                            (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
+      const float x = event.button.x * density;
+      const float y = event.button.y * density;
+      if (event.button.clicks == 2 && kind_ == WindowKind::kMain &&
+          handler_->RegionAt(x, y) == WindowRegion::kCaption) {
+        ToggleMaximize();
+        return;
+      }
+      handler_->OnMouseDown(x, y, (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
       return;
+    }
     case SDL_EVENT_MOUSE_BUTTON_UP:
       if (event.button.button != SDL_BUTTON_LEFT) return;
       handler_->OnMouseUp(event.button.x * density, event.button.y * density);

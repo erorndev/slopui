@@ -13,6 +13,9 @@ struct ChatMessage {
   std::string text;
   bool is_notice = false;
   bool is_streaming = false;
+  int prompt_token_count = 0;
+  int generated_token_count = 0;
+  float generation_seconds = 0;
 };
 
 struct Conversation {

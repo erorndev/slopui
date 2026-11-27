@@ -164,6 +164,9 @@ class App : public WindowHandler {
   void BuildMessageActions(ui::Node* parent, size_t message_index,
                            bool is_last_message);
   ui::Node* BuildCopyButton(ui::Node* parent, std::string id);
+  std::string StreamingStatusText(const ChatMessage& message) const;
+  std::string FinishedStatisticsText(const ChatMessage& message) const;
+  static float TokensPerSecond(const ChatMessage& message);
   void StartNewConversation();
   bool IsTextField(std::string_view node_id) const;
   std::optional<TextFieldEditor> FocusedEditor();

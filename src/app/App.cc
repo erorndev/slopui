@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <initializer_list>
 #include <thread>
 
@@ -320,6 +321,7 @@ void App::HandleEngineEvent(const llm::EngineEvent& event) {
         model_error_ = event.text;
       }
       return;
+    case EngineEventKind::kPromptStarted:
     case EngineEventKind::kTokenText:
     case EngineEventKind::kGenerationFinished:
     case EngineEventKind::kGenerationFailed:
@@ -332,6 +334,15 @@ void App::HandleEngineEvent(const llm::EngineEvent& event) {
       conversations_[generating_conversation_index_].messages;
   if (messages.empty() || !messages.back().is_streaming) return;
   ChatMessage& reply = messages.back();
+  if (event.kind == EngineEventKind::kPromptStarted) {
+    reply.prompt_token_count = event.token_count;
+    return;
+  }
+  if (event.kind == EngineEventKind::kTokenText ||
+      event.kind == EngineEventKind::kGenerationFinished) {
+    reply.generated_token_count = event.token_count;
+    reply.generation_seconds = event.seconds;
+  }
   if (event.kind == EngineEventKind::kTokenText) {
     reply.text += event.text;
     return;
@@ -991,8 +1002,14 @@ void App::BuildMessageList(ui::Node* parent) {
     } else if (message.is_streaming &&
                (message.text.empty() || !generation_settings_.stream_tokens)) {
       BuildLabel(group, "Writing…", body_font_.get(), palette_.text_tertiary);
+      BuildLabel(group, StreamingStatusText(message), caption_font_.get(),
+                 palette_.text_tertiary);
     } else {
       BuildMarkdown(group, message.text);
+      if (message.is_streaming) {
+        BuildLabel(group, StreamingStatusText(message), caption_font_.get(),
+                   palette_.text_tertiary);
+      }
     }
     BuildMessageActions(group, index,
                         index + 1 == conversation.messages.size());
@@ -1035,6 +1052,35 @@ void App::BuildMessageActions(ui::Node* parent, size_t message_index,
                     message.is_notice ? "Try again" : "Regenerate",
                     ButtonStyle::kQuiet);
   }
+  if (shows_copy && message.generated_token_count > 0) {
+    ui::Node* statistics =
+        BuildLabel(actions, FinishedStatisticsText(message),
+                   caption_font_.get(), palette_.text_tertiary);
+    YGNodeStyleSetMargin(statistics->yoga_node(), YGEdgeLeft,
+                         theme::Spacing(1.5f));
+  }
+}
+
+std::string App::StreamingStatusText(const ChatMessage& message) const {
+  if (message.generated_token_count == 0) {
+    if (message.prompt_token_count == 0) return "Starting…";
+    return std::format("Reading {} tokens of conversation…",
+                       message.prompt_token_count);
+  }
+  return std::format("{} tokens · {:.1f} tokens/s",
+                     message.generated_token_count, TokensPerSecond(message));
+}
+
+std::string App::FinishedStatisticsText(const ChatMessage& message) const {
+  return std::format("{} tokens · {:.1f} tokens/s · {:.1f} s",
+                     message.generated_token_count, TokensPerSecond(message),
+                     message.generation_seconds);
+}
+
+float App::TokensPerSecond(const ChatMessage& message) {
+  if (message.generation_seconds <= 0) return 0;
+  return static_cast<float>(message.generated_token_count) /
+         message.generation_seconds;
 }
 
 ui::Node* App::BuildCopyButton(ui::Node* parent, std::string id) {

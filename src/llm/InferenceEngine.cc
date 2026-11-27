@@ -11,6 +11,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <string_view>
 #include <utility>
 
 namespace lale::llm {
@@ -18,6 +21,64 @@ namespace lale::llm {
 namespace {
 
 constexpr int kPenaltyWindowTokens = 64;
+
+struct TemplateFamily {
+  const char* marker_token;
+  const char* template_name;
+};
+
+constexpr TemplateFamily kTemplateFamilies[] = {
+    {"<|start_header_id|>", "llama3"}, {"<start_of_turn>", "gemma"},
+    {"<|im_start|>", "chatml"},        {"<|user|>", "phi3"},
+    {"[INST]", "mistral-v7"},
+};
+
+constexpr std::string_view kEndOfTurnMarkers[] = {
+    "<|im_end|>",    "<|im_start|>",
+    "<|eot_id|>",    "<|start_header_id|>",
+    "<end_of_turn>", "<start_of_turn>",
+    "<|end|>",       "<|user|>",
+    "<|endoftext|>", "</s>",
+    "[INST]",
+};
+
+bool HasSpecialToken(const llama_vocab* vocab, const char* text) {
+  llama_token tokens[4];
+  const int length = static_cast<int>(std::strlen(text));
+  return llama_tokenize(vocab, text, length, tokens, 4, false, true) == 1;
+}
+
+size_t FindEndOfTurnMarker(std::string_view text) {
+  size_t earliest = std::string_view::npos;
+  for (std::string_view marker : kEndOfTurnMarkers) {
+    earliest = std::min(earliest, text.find(marker));
+  }
+  return earliest;
+}
+
+size_t LongestMarkerLength() {
+  size_t longest = 0;
+  for (std::string_view marker : kEndOfTurnMarkers) {
+    longest = std::max(longest, marker.size());
+  }
+  return longest;
+}
+
+size_t SafePublishEnd(const std::string& text, size_t published) {
+  const size_t held_back = LongestMarkerLength() - 1;
+  if (text.size() <= published + held_back) return published;
+  size_t end = text.size() - held_back;
+  while (end > published &&
+         (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
+    --end;
+  }
+  return end;
+}
+
+float SecondsSince(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<float>(std::chrono::steady_clock::now() - start)
+      .count();
+}
 
 void DiscardLog(ggml_log_level, const char*, void*) {}
 
@@ -142,20 +203,19 @@ void InferenceEngine::Enqueue(Command command) {
 }
 
 void InferenceEngine::Publish(EngineEventKind kind, std::string text) {
+  PublishEvent({kind, std::move(text)});
+}
+
+void InferenceEngine::PublishEvent(EngineEvent event) {
   {
     std::lock_guard lock(event_mutex_);
-    pending_events_.push_back({kind, std::move(text)});
+    pending_events_.push_back(std::move(event));
   }
   wake_owner_();
 }
 
 void InferenceEngine::PublishLoadProgress(float progress) {
-  {
-    std::lock_guard lock(event_mutex_);
-    pending_events_.push_back(
-        {EngineEventKind::kModelLoadProgress, {}, progress});
-  }
-  wake_owner_();
+  PublishEvent({EngineEventKind::kModelLoadProgress, {}, progress});
 }
 
 bool InferenceEngine::ReportLoadProgress(float progress, void* engine_pointer) {
@@ -269,6 +329,12 @@ std::string InferenceEngine::FormatPrompt(
     std::string prompt = apply_template(model_template);
     if (!prompt.empty()) return prompt;
   }
+  const llama_vocab* vocab = llama_model_get_vocab(model_);
+  for (const TemplateFamily& family : kTemplateFamilies) {
+    if (!HasSpecialToken(vocab, family.marker_token)) continue;
+    std::string prompt = apply_template(family.template_name);
+    if (!prompt.empty()) return prompt;
+  }
   return apply_template("chatml");
 }
 
@@ -324,6 +390,7 @@ void InferenceEngine::GenerateOnWorker(
     return llama_process(context_, LLAMA_PROCESS_TYPE_DECODE, batch);
   };
 
+  PublishEvent({EngineEventKind::kPromptStarted, {}, 0, token_count});
   bool failed = false;
   llama_pos next_position = 0;
   for (int offset = 0; offset < token_count && !failed;
@@ -333,28 +400,43 @@ void InferenceEngine::GenerateOnWorker(
     next_position += count;
   }
 
+  const auto writing_started = std::chrono::steady_clock::now();
   std::string pending_bytes;
+  std::string reply_text;
+  size_t published_length = 0;
   int generated_count = 0;
+  auto publish_text = [&](size_t end) {
+    if (end <= published_length) return;
+    PublishEvent({EngineEventKind::kTokenText,
+                  reply_text.substr(published_length, end - published_length),
+                  0, generated_count, SecondsSince(writing_started)});
+    published_length = end;
+  };
   while (!failed && !cancel_requested_ &&
          generated_count < sampling.maximum_tokens &&
          next_position < context_size) {
     llama_token token = llama_sampler_sample(sampler, context_, -1);
     if (llama_vocab_is_eog(vocab, token)) break;
+    ++generated_count;
     char piece[256];
     const int piece_length =
         llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
     if (piece_length > 0) {
       pending_bytes.append(piece, static_cast<size_t>(piece_length));
       const size_t complete = CompleteUtf8Length(pending_bytes);
-      if (complete > 0) {
-        Publish(EngineEventKind::kTokenText, pending_bytes.substr(0, complete));
-        pending_bytes.erase(0, complete);
+      reply_text.append(pending_bytes, 0, complete);
+      pending_bytes.erase(0, complete);
+      const size_t marker = FindEndOfTurnMarker(reply_text);
+      if (marker != std::string::npos) {
+        reply_text.resize(marker);
+        break;
       }
+      publish_text(SafePublishEnd(reply_text, published_length));
     }
-    ++generated_count;
     failed = process(&token, 1, next_position) != 0;
     ++next_position;
   }
+  publish_text(reply_text.size());
 
   llama_batch_ext_free(batch);
   llama_sampler_free(sampler);
@@ -363,7 +445,11 @@ void InferenceEngine::GenerateOnWorker(
             "llama.cpp stopped with an error while writing the reply.");
     return;
   }
-  Publish(EngineEventKind::kGenerationFinished);
+  PublishEvent({EngineEventKind::kGenerationFinished,
+                {},
+                0,
+                generated_count,
+                SecondsSince(writing_started)});
 }
 
 }

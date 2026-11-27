@@ -41,6 +41,7 @@ enum class EngineEventKind {
   kModelLoaded,
   kModelLoadFailed,
   kModelUnloaded,
+  kPromptStarted,
   kTokenText,
   kGenerationFinished,
   kGenerationFailed,
@@ -50,6 +51,8 @@ struct EngineEvent {
   EngineEventKind kind;
   std::string text;
   float progress = 0;
+  int token_count = 0;
+  float seconds = 0;
 };
 
 class InferenceEngine {
@@ -79,6 +82,7 @@ class InferenceEngine {
   void RunWorker();
   void Enqueue(Command command);
   void Publish(EngineEventKind kind, std::string text = {});
+  void PublishEvent(EngineEvent event);
   void PublishLoadProgress(float progress);
   static bool ReportLoadProgress(float progress, void* engine);
   void LoadOnWorker(const ModelOptions& options);

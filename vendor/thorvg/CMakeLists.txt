@@ -1,8 +1,4 @@
-# CMake build for vendored ThorVG. Upstream builds only with Meson; this file
-# mirrors vendor/thorvg/meson.build for the subset Lale uses. When upgrading
-# ThorVG, re-check the source lists against the meson.build files under src/.
-
-cmake_minimum_required(VERSION 3.23)
+﻿cmake_minimum_required(VERSION 3.23)
 project(thorvg VERSION 1.1.4 LANGUAGES CXX)
 
 option(THORVG_SIMD "Build the AVX2 raster path" ON)
@@ -10,12 +6,10 @@ option(THORVG_SIMD "Build the AVX2 raster path" ON)
 set(TVG_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 set(TVG_SOURCES
-    # common
     ${TVG_SRC}/common/tvgArray.cpp
     ${TVG_SRC}/common/tvgCompressor.cpp
     ${TVG_SRC}/common/tvgMath.cpp
     ${TVG_SRC}/common/tvgStr.cpp
-    # renderer
     ${TVG_SRC}/renderer/tvgAccessor.cpp
     ${TVG_SRC}/renderer/tvgAnimation.cpp
     ${TVG_SRC}/renderer/tvgCanvas.cpp
@@ -30,7 +24,6 @@ set(TVG_SOURCES
     ${TVG_SRC}/renderer/tvgShape.cpp
     ${TVG_SRC}/renderer/tvgTaskScheduler.cpp
     ${TVG_SRC}/renderer/tvgText.cpp
-    # cpu engine
     ${TVG_SRC}/renderer/cpu_engine/tvgSwBlendOp.cpp
     ${TVG_SRC}/renderer/cpu_engine/tvgSwFill.cpp
     ${TVG_SRC}/renderer/cpu_engine/tvgSwImage.cpp
@@ -43,7 +36,6 @@ set(TVG_SOURCES
     ${TVG_SRC}/renderer/cpu_engine/tvgSwShape.cpp
     ${TVG_SRC}/renderer/cpu_engine/tvgSwStroke.cpp
     ${TVG_SRC}/renderer/cpu_engine/tvgSwUtil.cpp
-    # loaders: raw (always), svg, sfnt (ttf + otf)
     ${TVG_SRC}/modules/raw/tvgRawLoader.cpp
     ${TVG_SRC}/modules/svg/tvgSvgBuilder.cpp
     ${TVG_SRC}/modules/svg/tvgSvgCssStyle.cpp
@@ -68,7 +60,6 @@ if(THORVG_SIMD)
     set(THORVG_AVX_SUPPORT 1)
 endif()
 
-# Equivalent of the config.h meson generates.
 set(TVG_CONFIG_DIR ${CMAKE_CURRENT_BINARY_DIR}/config)
 set(TVG_CONFIG "#pragma once\n")
 string(APPEND TVG_CONFIG "#define THORVG_VERSION_STRING \"${PROJECT_VERSION}\"\n")

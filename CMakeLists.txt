@@ -5,11 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Vendored third-party modules (see vendor/ and CLAUDE.md for versions).
-add_subdirectory(vendor/yoga/yoga EXCLUDE_FROM_ALL)   # target: yogacore
-add_subdirectory(vendor/thorvg EXCLUDE_FROM_ALL)      # target: thorvg
+add_subdirectory(vendor/yoga/yoga EXCLUDE_FROM_ALL)
+add_subdirectory(vendor/thorvg EXCLUDE_FROM_ALL)
 
-# llama.cpp is a system install; the app does not call it yet.
 find_package(llama CONFIG)
 if(llama_FOUND)
     message(STATUS "Found system llama.cpp")
@@ -17,7 +15,15 @@ else()
     message(STATUS "System llama.cpp not found; continuing without it")
 endif()
 
-add_executable(lale WIN32 src/main.cpp)
+add_executable(lale WIN32
+    src/Main.cc
+    src/app/App.cc
+    src/gfx/Presenter.cc
+    src/platform/Window.cc
+    src/ui/Font.cc
+    src/ui/Node.cc
+    src/ui/Renderer.cc)
+target_include_directories(lale PRIVATE src)
 target_link_libraries(lale PRIVATE yogacore thorvg d3d11 dxgi)
 if(llama_FOUND)
     target_link_libraries(lale PRIVATE llama)

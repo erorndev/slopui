@@ -1,6 +1,14 @@
 #include "llm/InferenceEngine.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <ggml-backend.h>
 #include <llama.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <utility>
@@ -12,6 +20,17 @@ namespace {
 constexpr int kPenaltyWindowTokens = 64;
 
 void DiscardLog(ggml_log_level, const char*, void*) {}
+
+std::string GgmlLibraryDirectory() {
+  HMODULE ggml_module = GetModuleHandleW(L"ggml.dll");
+  if (!ggml_module) return {};
+  char module_path[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameA(ggml_module, module_path, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) return {};
+  std::string directory(module_path, length);
+  directory.resize(directory.find_last_of("/\\"));
+  return directory;
+}
 
 bool AbortRequested(void* cancel_flag) {
   return static_cast<std::atomic<bool>*>(cancel_flag)->load();
@@ -60,6 +79,12 @@ llama_sampler* MakeSampler(const llama_vocab* vocab,
 InferenceEngine::InferenceEngine(std::function<void()> wake_owner)
     : wake_owner_(std::move(wake_owner)) {
   llama_log_set(DiscardLog, nullptr);
+  const std::string backend_directory = GgmlLibraryDirectory();
+  if (backend_directory.empty()) {
+    ggml_backend_load_all();
+  } else {
+    ggml_backend_load_all_from_path(backend_directory.c_str());
+  }
   llama_backend_init();
   worker_ = std::thread(&InferenceEngine::RunWorker, this);
 }

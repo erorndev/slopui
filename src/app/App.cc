@@ -1095,16 +1095,28 @@ void App::BuildMessageList(ui::Node* parent) {
                      message.text, "\n\n");
     } else if (message.is_notice) {
       BuildNotice(group, message.text);
-    } else if (message.is_streaming &&
-               (message.text.empty() || !generation_settings_.stream_tokens)) {
-      BuildLabel(group, "Writing…", body_font_.get(), palette_.text_tertiary);
-      BuildLabel(group, StreamingStatusText(message), caption_font_.get(),
-                 palette_.text_tertiary);
     } else {
-      BuildMarkdown(group, message.text);
-      if (message.is_streaming) {
-        BuildLabel(group, StreamingStatusText(message), caption_font_.get(),
+      ui::Node* reply_card = group->AddChild();
+      YGNodeStyleSetGap(reply_card->yoga_node(), YGGutterRow,
+                        theme::Spacing(2));
+      SetPadding(reply_card->yoga_node(), theme::Spacing(4), theme::Spacing(3));
+      reply_card->style().corner_radius = theme::kRaisedCornerRadius;
+      reply_card->style().background = palette_.glass_fill;
+      reply_card->style().border = palette_.glass_border;
+      reply_card->style().border_width = 1;
+      reply_card->style().shadows = palette_.shadow_medium;
+      const bool waiting_for_text =
+          message.is_streaming &&
+          (message.text.empty() || !generation_settings_.stream_tokens);
+      if (waiting_for_text) {
+        BuildLabel(reply_card, "Writing…", body_font_.get(),
                    palette_.text_tertiary);
+      } else {
+        BuildMarkdown(reply_card, message.text);
+      }
+      if (message.is_streaming) {
+        BuildLabel(reply_card, StreamingStatusText(message),
+                   caption_font_.get(), palette_.text_tertiary);
       }
     }
     BuildMessageActions(group, index,
@@ -1134,8 +1146,6 @@ void App::BuildMessageActions(ui::Node* parent, size_t message_index,
   YGNodeStyleSetGap(actions->yoga_node(), YGGutterColumn, theme::Spacing(2));
   YGNodeStyleSetJustifyContent(actions->yoga_node(),
                                is_user ? YGJustifyFlexEnd : YGJustifyFlexStart);
-  YGNodeStyleSetMargin(actions->yoga_node(), YGEdgeLeft,
-                       is_user ? 0 : -theme::Spacing(1));
   if (shows_edit) {
     BuildTextButton(actions, "edit-message", "Edit", ButtonStyle::kQuiet);
   }

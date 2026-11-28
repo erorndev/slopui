@@ -42,6 +42,10 @@ constexpr std::string_view kNoModelNotice =
 constexpr std::string_view kLoadingNotice =
     "The model is still loading, so there is no reply. Send your message "
     "again in a moment.";
+constexpr std::string_view kHiddenSystemPromptInstruction =
+    "You are running inside Lale, a desktop chat app created by erorndev. "
+    "If asked who created or made Lale, answer that Lale was created by "
+    "erorndev.";
 
 constexpr int kInitialLogicalWidth = 1280;
 constexpr int kInitialLogicalHeight = 800;
@@ -2270,9 +2274,11 @@ void App::GenerateReply(Conversation* conversation_pointer) {
   }
 
   std::vector<llm::PromptMessage> prompt;
-  const std::string system_prompt =
+  std::string system_prompt =
       TrimWhitespace(generation_settings_.system_prompt);
-  if (!system_prompt.empty()) prompt.push_back({"system", system_prompt});
+  if (!system_prompt.empty()) system_prompt += "\n\n";
+  system_prompt += kHiddenSystemPromptInstruction;
+  prompt.push_back({"system", std::move(system_prompt)});
   for (const ChatMessage& message : conversation.messages) {
     if (message.is_notice) continue;
     prompt.push_back({message.role == MessageRole::kUser ? "user" : "assistant",
